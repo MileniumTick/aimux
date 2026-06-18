@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -120,6 +121,7 @@ type model struct {
 	editCLIPathResult EditCLIPathResult
 
 	loading bool
+	spinner  spinner.Model
 
 	notification     string
 	notificationIsMsg bool
@@ -139,6 +141,7 @@ func NewModel(providerUseCases *application.ProviderUseCases, switchUseCases *ap
 		switchUseCases:   switchUseCases,
 		currentView:      dashboardView,
 		menuSelected:     menuItemManageProviders,
+		spinner:          spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(spinnerStyle)),
 	}
 }
 
@@ -165,6 +168,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.currentView = prev
 				if prev == switchTargetCLIView || prev == switchProviderView {
 					return m, m.enterSwitchView(prev)
+				}
+				if prev == manageCLIView {
+					return m, m.enterManageCLIView()
 				}
 				return m, nil
 			}
@@ -261,6 +267,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		})
 		return m, tea.Batch(cmds...)
 
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
 	default:
 		return m, nil
 	}
@@ -325,10 +336,13 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, menuKeys.Test):
 			if m.selectedProviderID > 0 {
 				m.loading = true
-				return m, func() tea.Msg {
-					err := m.providerUseCases.TestConnectivity(m.selectedProviderID)
-					return testConnectivityResultMsg{err: err}
-				}
+					return m, tea.Batch(
+						func() tea.Msg {
+							err := m.providerUseCases.TestConnectivity(m.selectedProviderID)
+							return testConnectivityResultMsg{err: err}
+						},
+						m.spinner.Tick,
+					)
 			}
 		case key.Matches(msg, menuKeys.Edit):
 			if m.selectedProviderID > 0 {
@@ -473,6 +487,19 @@ func (m *model) enterSwitchView(view viewType) tea.Cmd {
 		return m.form.Init()
 	}
 	return nil
+}
+
+func (m *model) enterManageCLIView() tea.Cmd {
+	clis, err := m.switchUseCases.ListTargetCLIs()
+	if err != nil || len(clis) == 0 {
+		return func() tea.Msg {
+			return notificationMsg{message: "No target CLIs configured", isError: true}
+		}
+	}
+	m.targetCLIs = clis
+	m.selectedCLIID = 0
+	m.form = NewSelectCLIForm(clis, &m.selectedCLIID)
+	return m.form.Init()
 }
 
 func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
@@ -642,46 +669,41 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-var (
-	titleStyle = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("255")).
-		Padding(0, 2)
-
-	viewPadding = lipgloss.NewStyle().PaddingTop(2)
-
-	notifOKStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("236")).
-			Foreground(lipgloss.Color("42")).
-			Padding(0, 2).
-			Bold(true)
-
-	notifErrStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("236")).
-			Foreground(lipgloss.Color("167")).
-			Padding(0, 2).
-			Bold(true)
-)
-
 func (m *model) View() string {
+	width := m.width
+	if width < 1 {
+		width = 80
+	}
+
 	if m.form != nil {
 		return m.form.View()
 	}
 
-	var content string
+	var body string
+	viewTitle := ""
+	viewHints := ""
+
 	switch m.currentView {
 	case dashboardView:
-		table := RenderTable(m.providers, m.activeMultiplexes, m.targetCLIs, m.width)
+		viewTitle = "Dashboard"
+		viewHints = "↑/↓ navigate · Enter select · q quit"
+
+		table := RenderTable(m.providers, m.activeMultiplexes, m.targetCLIs, width)
 		menu := RenderMenu(m.menuSelected, len(m.providers) > 0)
-		title := titleStyle.Render("aimux")
-		content = lipgloss.JoinVertical(lipgloss.Left, title, table, menu)
-		content = viewPadding.Render(content)
+		body = lipgloss.NewStyle().PaddingTop(2).Render(
+			lipgloss.JoinVertical(lipgloss.Left, table, "\n", menu),
+		)
 
 	case providerListView:
-		content = RenderProviderList(m.providers, m.selectedProviderID, m.width)
-		content = viewPadding.Render(content)
+		viewTitle = "Providers"
+		viewHints = "↑/↓ navigate · Enter Switch · a add · d delete · e edit · r retry · t test · Esc back"
+		body = lipgloss.NewStyle().PaddingTop(2).Render(
+			RenderProviderList(m.providers, m.selectedProviderID, width),
+		)
 
 	case switchConfirmationView:
+		viewTitle = "Switch"
+		viewHints = "Enter Apply · Esc Abort"
 		if m.switchDryRun != nil {
 			envBlock := ""
 			for k, v := range m.switchDryRun.EnvVars {
@@ -689,38 +711,40 @@ func (m *model) View() string {
 					envBlock += fmt.Sprintf("\n    %s = %s", k, v)
 				}
 			}
-			content = fmt.Sprintf(
-				"\n\n  Dry-run — the following will be applied:\n\n  Target CLI:  %s\n  Config:      %s\n  Env vars:%s\n\n  %s\n",
+			body = fmt.Sprintf(
+				"\n  Dry-run — the following will be applied:\n\n  Target CLI:  %s\n  Config:      %s\n  Env vars:%s\n",
 				m.switchDryRun.CLIName, m.switchDryRun.ConfigPath, envBlock,
-				helpStyle.Render("Enter = Apply · Esc = Abort"),
 			)
 		} else {
-			content = fmt.Sprintf(
-				"\n\n  Profile activated successfully!\n\n  The config has been written and multiplex is active.\n",
-			)
+			body = "\n  Profile activated successfully!\n\n  The config has been written and multiplex is active."
 			if m.switchBackupPath != "" {
-				content += fmt.Sprintf("\n  Backup saved to:\n  %s\n", m.switchBackupPath)
+				body += fmt.Sprintf("\n  Backup saved to:\n  %s", m.switchBackupPath)
 			}
-			content += fmt.Sprintf("\n  %s\n\n",
-				helpStyle.Render("Press Enter or Esc to return to dashboard"),
-			)
 		}
-		content = viewPadding.Render(content)
+		body = lipgloss.NewStyle().PaddingTop(2).Render(body)
 
 	default:
-		content = "Loading..."
+		body = "Loading..."
 	}
 
-	if m.notification != "" {
-		style := notifErrStyle
-		if m.notificationIsMsg {
-			style = notifOKStyle
-		}
-		bar := style.Width(m.width).Render("  " + m.notification)
-		content = lipgloss.JoinVertical(lipgloss.Center, content, "\n", bar)
+	// Header
+	body = lipgloss.JoinVertical(lipgloss.Left,
+		AppHeader(width, viewTitle),
+		body,
+	)
+
+	// Notification
+	if n := Notification(m.notification, !m.notificationIsMsg); n != "" {
+		body = lipgloss.JoinVertical(lipgloss.Left, body, "", n)
 	}
 
-	return content
+	// Status bar with optional spinner
+	if m.loading {
+		viewHints = m.spinner.View() + " " + viewHints
+	}
+	body = lipgloss.JoinVertical(lipgloss.Left, body, StatusBar(width, viewHints))
+
+	return body
 }
 
 func (m *model) refreshData() tea.Msg {
@@ -752,8 +776,10 @@ func (m *model) previousView() viewType {
 	switch m.currentView {
 	case addProviderView, deleteProviderView, editProviderView:
 		return providerListView
-	case manageCLIView, editCLIPathView:
+	case manageCLIView:
 		return dashboardView
+	case editCLIPathView:
+		return manageCLIView
 	case switchMapModelsView:
 		return switchProviderView
 	case switchProviderView:
@@ -819,7 +845,9 @@ func (m *model) prevProviderID(current int64) int64 {
 func (m *model) isSingleSelectForm() bool {
 	return m.currentView == switchTargetCLIView ||
 		m.currentView == switchProviderView ||
-		m.currentView == manageCLIView
+		m.currentView == manageCLIView ||
+		m.currentView == editCLIPathView ||
+		m.currentView == switchMapModelsView
 }
 
 func trimSpaces(s string) string {

@@ -4,45 +4,11 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/MileniumTick/aimux/internal/domain"
 )
 
-var (
-	// Header: bold white on subtle gray, no border
-	headerStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("255")).
-			Background(lipgloss.Color("236")).
-			Padding(0, 2)
-
-	// Divider line below header
-	dividerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("237"))
-
-	rowEvenStyle = lipgloss.NewStyle().
-			Padding(0, 2).
-			Foreground(lipgloss.Color("252"))
-
-	rowOddStyle = lipgloss.NewStyle().
-			Padding(0, 2).
-			Foreground(lipgloss.Color("252")).
-			Background(lipgloss.Color("236"))
-
-	inactiveStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241"))
-
-	activeStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("42"))
-
-	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("167"))
-)
-
-// RenderTable renders the status table showing CLIs and active multiplexes.
+// RenderTable renders the dashboard status table, no help hints in body.
 func RenderTable(providers []domain.Provider, activeMultiplexes []domain.ActiveMultiplex, targetCLIs []domain.TargetCLI, termWidth int) string {
-	var b strings.Builder
-
 	activeByCLI := make(map[int64]domain.ActiveMultiplex)
 	for _, am := range activeMultiplexes {
 		activeByCLI[am.TargetCLIID] = am
@@ -53,13 +19,12 @@ func RenderTable(providers []domain.Provider, activeMultiplexes []domain.ActiveM
 		availWidth = 72
 	}
 
-	// Columns: CLI 20%, Provider 25%, Models rest, Status 10
-	statW := 8
-	cliW := availWidth * 20 / 100
-	provW := availWidth * 25 / 100
+	cliW := availWidth * 28 / 100
+	provW := availWidth * 28 / 100
+	statW := 10
 	modW := availWidth - cliW - provW - statW
 
-	minCLI, minProv, minStat, minMod := 16, 10, 6, 15
+	minCLI, minProv, minStat, minMod := 14, 10, 6, 12
 	if cliW < minCLI {
 		cliW = minCLI
 	}
@@ -74,44 +39,39 @@ func RenderTable(providers []domain.Provider, activeMultiplexes []domain.ActiveM
 	}
 	total := cliW + provW + modW + statW
 	if total > availWidth {
-		over := total - availWidth
-		modW -= over
+		modW -= total - availWidth
 		if modW < minMod {
 			modW = minMod
 		}
 	}
 
+	var b strings.Builder
+
 	// Header
-	header := lipgloss.JoinHorizontal(lipgloss.Top,
-		headerStyle.Width(cliW).Render("CLI"),
-		headerStyle.Width(provW).Render("Provider"),
-		headerStyle.Width(modW).Render("Models"),
-		headerStyle.Width(statW).Render("Status"),
-	)
-	divider := dividerStyle.Width(availWidth).Render(strings.Repeat("─", availWidth))
+	b.WriteString(Row(
+		Col{Style: headerStyle, Text: "CLI", Width: cliW},
+		Col{Style: headerStyle, Text: "Provider", Width: provW},
+		Col{Style: headerStyle, Text: "Models", Width: modW},
+		Col{Style: headerStyle, Text: "Status", Width: statW},
+	))
+	b.WriteString("\n")
+	b.WriteString(Divider(cliW, provW, modW, statW))
 
 	if len(targetCLIs) == 0 {
-		row := lipgloss.JoinHorizontal(lipgloss.Top,
-			rowEvenStyle.Width(cliW).Render("---"),
-			rowEvenStyle.Width(provW).Render("---"),
-			rowEvenStyle.Width(modW).Render("---"),
-			inactiveStyle.Width(statW).Render("INACTIVE"),
-		)
-		b.WriteString(lipgloss.JoinVertical(lipgloss.Left,
-			header, divider, row,
+		b.WriteString("\n")
+		b.WriteString(RowAlt(0,
+			Col{Style: rowEvenStyle, Text: "---", Width: cliW},
+			Col{Style: rowEvenStyle, Text: "---", Width: provW},
+			Col{Style: rowEvenStyle, Text: "---", Width: modW},
+			Col{Style: inactiveStyle, Text: "INACTIVE", Width: statW},
 		))
-		b.WriteString("\n\n")
-		b.WriteString(helpStyle.Render("No CLIs configured — run 'aimux init' first"))
+		b.WriteString("\n  ")
+		b.WriteString(EmptyState("", "No CLIs configured — add one in Manage CLIs", availWidth))
 		return b.String()
 	}
 
-	rows := []string{header, divider}
 	for i, cli := range targetCLIs {
-		rowStyle := rowEvenStyle
-		if i%2 == 1 {
-			rowStyle = rowOddStyle
-		}
-
+		b.WriteString("\n")
 		am, hasActive := activeByCLI[cli.ID]
 		if hasActive {
 			mappings := make(map[string]string)
@@ -133,45 +93,38 @@ func RenderTable(providers []domain.Provider, activeMultiplexes []domain.ActiveM
 				providerName = "---"
 			}
 
-			row := lipgloss.JoinHorizontal(lipgloss.Top,
-				rowStyle.Width(cliW).Render(cli.Name),
-				rowStyle.Width(provW).Render(providerName),
-				rowStyle.Width(modW).Render(truncate(modelsStr, modW-1)),
-				activeStyle.Width(statW).Render("ACTIVE"),
-			)
-			rows = append(rows, row)
+			b.WriteString(RowAlt(i,
+				Col{Style: rowEvenStyle, Text: cli.Name, Width: cliW},
+				Col{Style: rowEvenStyle, Text: providerName, Width: provW},
+				Col{Style: rowEvenStyle, Text: truncate(modelsStr, modW-1), Width: modW},
+				Col{Style: activeStyle, Text: "ACTIVE", Width: statW},
+			))
 		} else {
-			row := lipgloss.JoinHorizontal(lipgloss.Top,
-				rowStyle.Width(cliW).Render(cli.Name),
-				rowStyle.Width(provW).Render("---"),
-				rowStyle.Width(modW).Render("---"),
-				inactiveStyle.Width(statW).Render("INACTIVE"),
-			)
-			rows = append(rows, row)
+			b.WriteString(RowAlt(i,
+				Col{Style: rowEvenStyle, Text: cli.Name, Width: cliW},
+				Col{Style: rowEvenStyle, Text: "---", Width: provW},
+				Col{Style: rowEvenStyle, Text: "---", Width: modW},
+				Col{Style: inactiveStyle, Text: "INACTIVE", Width: statW},
+			))
 		}
 	}
 
-	b.WriteString(lipgloss.JoinVertical(lipgloss.Left, rows...))
-	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("Enter = Select action · ↑/↓ navigate menu · q quit"))
 	return b.String()
 }
 
-// RenderProviderList renders the provider management table.
+// RenderProviderList renders the provider management table, no hints in body.
 func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth int) string {
 	if len(providers) == 0 {
-		return helpStyle.Render("No providers configured. Press 'a' to add one.")
+		return "  " + EmptyState("", "No providers configured. Press 'a' to add one.", termWidth)
 	}
 
-	// Dynamic columns
 	nameW := 18
-	urlW := 28
+	urlW := 30
 	modelsW := 14
 	statW := 8
 
 	if termWidth > 0 {
-		totalPadding := 6
-		availWidth := termWidth - totalPadding
+		availWidth := termWidth - 4
 		minName := 10
 		minURL := 12
 		minStat := 6
@@ -188,36 +141,42 @@ func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth
 			}
 		}
 	}
-
-	var b strings.Builder
-	header := lipgloss.JoinHorizontal(lipgloss.Top,
-		headerStyle.Width(nameW).Render("Name"),
-		headerStyle.Width(urlW).Render("Base URL"),
-		headerStyle.Width(modelsW).Render("Models"),
-		headerStyle.Width(statW).Render("Status"),
-	)
 	dispW := termWidth
 	if dispW < 2 {
 		dispW = 72
 	}
-	divider := dividerStyle.Width(dispW - 2).Render(strings.Repeat("─", dispW-2))
-
-	rows := []string{header, divider}
-	for i, p := range providers {
-		rowStyle := rowEvenStyle
-		if i%2 == 1 {
-			rowStyle = rowOddStyle
+	totalW := nameW + urlW + modelsW + statW
+	if totalW > dispW-2 {
+		overflow := totalW - (dispW - 2)
+		urlW -= overflow
+		if urlW < 12 {
+			urlW = 12
 		}
+	}
 
+	var b strings.Builder
+
+	// Header
+	b.WriteString(Row(
+		Col{Style: headerStyle, Text: "Name", Width: nameW},
+		Col{Style: headerStyle, Text: "Base URL", Width: urlW},
+		Col{Style: headerStyle, Text: "Models", Width: modelsW},
+		Col{Style: headerStyle, Text: "Status", Width: statW},
+	))
+	b.WriteString("\n")
+	b.WriteString(Divider(nameW, urlW, modelsW, statW))
+
+	for i, p := range providers {
+		b.WriteString("\n")
 		name := p.Name
 		if p.ID == selectedID {
-			name = "> " + name
+			name = "▸ " + name
 		} else {
 			name = "  " + name
 		}
 
 		baseURL := p.BaseURL
-		urlDisplayLen := urlW - 2
+		urlDisplayLen := urlW - 4
 		if urlDisplayLen < 0 {
 			urlDisplayLen = 0
 		}
@@ -232,7 +191,7 @@ func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth
 		statusRender := activeStyle
 		if p.Status == "error" {
 			status = "ERROR"
-			statusRender = errorStyle
+			statusRender = errStyle
 		}
 
 		modelsStatus := "---"
@@ -242,18 +201,27 @@ func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth
 			modelsStatus = "Failed"
 		}
 
-		row := lipgloss.JoinHorizontal(lipgloss.Top,
-			rowStyle.Width(nameW).Render(truncate(name, nameW-1)),
-			rowStyle.Width(urlW).Render(baseURL),
-			rowStyle.Width(modelsW).Render(modelsStatus),
-			statusRender.Width(statW).Render(status),
-		)
-		rows = append(rows, row)
+		if p.ID == selectedID {
+			sel := selectedStyle
+			if i%2 == 1 {
+				sel = oddSelectedStyle
+			}
+			b.WriteString(RowPadded(sel,
+				Col{Style: sel, Text: name, Width: nameW},
+				Col{Style: sel, Text: baseURL, Width: urlW},
+				Col{Style: sel, Text: modelsStatus, Width: modelsW},
+				Col{Style: sel, Text: status, Width: statW},
+			))
+		} else {
+			b.WriteString(RowAlt(i,
+				Col{Style: rowEvenStyle, Text: name, Width: nameW},
+				Col{Style: rowEvenStyle, Text: baseURL, Width: urlW},
+				Col{Style: rowEvenStyle, Text: modelsStatus, Width: modelsW},
+				Col{Style: statusRender, Text: status, Width: statW},
+			))
+		}
 	}
 
-	b.WriteString(lipgloss.JoinVertical(lipgloss.Left, rows...))
-	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("↑/↓ navigate · Enter = Switch · a add · d delete · e edit · r retry · t test · Esc back"))
 	return b.String()
 }
 
