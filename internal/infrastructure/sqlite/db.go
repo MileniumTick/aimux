@@ -1,0 +1,217 @@
+package sqlite
+
+import (
+	"database/sql"
+	"fmt"
+	"os"
+
+	_ "modernc.org/sqlite"
+)
+
+// Open opens or creates a SQLite database at the given path, enables WAL mode,
+// and sets file permissions to 0600.
+func Open(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return nil, fmt.Errorf("open database: %w", err)
+	}
+
+	// Enable WAL mode
+	if _, err := db.Exec("PRAGMA journal_mode=WAL"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enable WAL: %w", err)
+	}
+
+	// Enable foreign key enforcement
+	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("enable foreign keys: %w", err)
+	}
+
+	// Set busy timeout to avoid "database is locked" errors
+	if _, err := db.Exec("PRAGMA busy_timeout=5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set busy timeout: %w", err)
+	}
+
+	// Set file permissions
+	if err := os.Chmod(path, 0600); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set database permissions: %w", err)
+	}
+
+	return db, nil
+}
+
+// RunMigrations creates all tables if they do not exist.
+func RunMigrations(db *sql.DB) error {
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS providers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL UNIQUE,
+			base_url TEXT NOT NULL,
+			api_key TEXT NOT NULL DEFAULT '',
+			auth_token TEXT NOT NULL DEFAULT '',
+			api_type TEXT NOT NULL DEFAULT 'openai',
+			status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'error')),
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+		`CREATE TABLE IF NOT EXISTS provider_models (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+			model_name TEXT NOT NULL,
+			UNIQUE(provider_id, model_name)
+		)`,
+		`CREATE TABLE IF NOT EXISTS target_clis (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL UNIQUE,
+			config_path TEXT NOT NULL,
+			env_vars TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS active_multiplex (
+			target_cli_id INTEGER PRIMARY KEY REFERENCES target_clis(id) ON DELETE CASCADE,
+			provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+			model_mappings TEXT NOT NULL,
+			activated_at TEXT NOT NULL DEFAULT (datetime('now'))
+		)`,
+	}
+
+	for _, stmt := range statements {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("run migration: %w", err)
+		}
+	}
+	return nil
+}
+
+// MigrationAddMutatorColumns adds mutator and mutator_config columns to target_clis.
+// Idempotent: checks if columns exist before altering.
+func MigrationAddMutatorColumns(db *sql.DB) error {
+	type col struct {
+		name, def string
+	}
+	columns := []col{
+		{"mutator", `TEXT NOT NULL DEFAULT 'claude-settings-json'`},
+		{"mutator_config", `TEXT NOT NULL DEFAULT '{}'`},
+	}
+	for _, c := range columns {
+		exists, err := columnExists(db, "target_clis", c.name)
+		if err != nil {
+			return fmt.Errorf("check column %s: %w", c.name, err)
+		}
+		if exists {
+			continue
+		}
+		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE target_clis ADD COLUMN %s %s", c.name, c.def)); err != nil {
+			return fmt.Errorf("add mutator columns migration: %w", err)
+		}
+	}
+	return nil
+}
+
+// MigrationAddApiTypeColumn adds the api_type column to providers.
+// Idempotent: checks if column exists before altering.
+func MigrationAddApiTypeColumn(db *sql.DB) error {
+	exists, err := columnExists(db, "providers", "api_type")
+	if err != nil {
+		return fmt.Errorf("check api_type column: %w", err)
+	}
+	if exists {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE providers ADD COLUMN api_type TEXT NOT NULL DEFAULT 'openai'`); err != nil {
+		return fmt.Errorf("add api_type column migration: %w", err)
+	}
+	return nil
+}
+
+// columnExists checks whether a column exists in a table.
+func columnExists(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name, colType string
+		var notNull, pk bool
+		var defaultVal *string
+		if err := rows.Scan(&cid, &name, &colType, &notNull, &defaultVal, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// CreateIndexes creates indexes if they do not exist.
+func CreateIndexes(db *sql.DB) error {
+	statements := []string{
+		"CREATE INDEX IF NOT EXISTS idx_provider_models_provider_id ON provider_models(provider_id)",
+	}
+	for _, stmt := range statements {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("create index: %w", err)
+		}
+	}
+	return nil
+}
+
+// SeedTargetCLIs inserts the default target CLI rows.
+// Idempotent via INSERT OR IGNORE.
+func SeedTargetCLIs(db *sql.DB) error {
+	stmt := `INSERT OR IGNORE INTO target_clis (name, config_path, env_vars, mutator, mutator_config)
+		VALUES (?, ?, ?, ?, ?)`
+
+	seeds := []struct {
+		name, configPath, envVars, mutator, mutatorConfig string
+	}{
+		{
+			"claude-code",
+			"~/.config/claude/settings.json",
+			`["ANTHROPIC_DEFAULT_HAIKU_MODEL","ANTHROPIC_DEFAULT_SONNET_MODEL","ANTHROPIC_DEFAULT_OPUS_MODEL","CLAUDE_CODE_SUBAGENT_MODEL"]`,
+			"claude-settings-json",
+			"{}",
+		},
+		{
+			"opencode",
+			"~/.config/opencode/config.json",
+			`["OPENCODE_MODEL","OPENCODE_FAST_MODEL"]`,
+			"opencode-provider-json",
+			`{"provider_id":"custom","npm":"@ai-sdk/openai-compatible"}`,
+		},
+		{
+			"codex",
+			"~/.codex/config.toml",
+			`["CODEX_MODEL"]`,
+			"codex-config-toml",
+			`{"provider_id":"custom"}`,
+		},
+		{
+			"github-copilot",
+			"~/.config/copilot/.env",
+			`["COPILOT_MODEL"]`,
+			"copilot-env-file",
+			"{}",
+		},
+		{
+			"pi-ai",
+			"~/.config/pi/models.json",
+			`["PI_DEFAULT_MODEL","PI_FAST_MODEL"]`,
+			"pi-dual-json",
+			`{"provider_id":"custom","provider_type":"openai-compatible"}`,
+		},
+	}
+
+	for _, s := range seeds {
+		if _, err := db.Exec(stmt, s.name, s.configPath, s.envVars, s.mutator, s.mutatorConfig); err != nil {
+			return fmt.Errorf("seed target clis: %w", err)
+		}
+	}
+	return nil
+}
