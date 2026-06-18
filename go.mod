@@ -1,4 +1,4 @@
-module github.com/jchavarriam/aimux
+module github.com/MileniumTick/aimux
 
 go 1.25.0
 
