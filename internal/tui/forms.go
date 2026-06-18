@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/MileniumTick/aimux/internal/application"
 	"github.com/MileniumTick/aimux/internal/domain"
 	"github.com/charmbracelet/huh"
 )
@@ -72,7 +73,7 @@ func NewAddProviderForm(result *AddProviderResult) *huh.Form {
 			huh.NewInput().
 				Title("Discovery URL (optional)").
 				Description("Separate URL for model discovery. Leave empty to use Base URL.").
-				Placeholder("https://ai.intranet.istmocenter.com").
+				Placeholder("https://api.bifrost.local/v1").
 				Value(&result.DiscoveryURL),
 			huh.NewSelect[string]().
 				Title("API Type").
@@ -343,7 +344,7 @@ func NewEditProviderForm(provider domain.Provider, result *EditProviderResult) *
 			huh.NewInput().
 				Title("Discovery URL (optional)").
 				Description("Separate URL for model discovery. Leave empty to use Base URL.").
-				Placeholder("https://ai.intranet.istmocenter.com").
+				Placeholder("https://api.bifrost.local/v1").
 				Value(&result.DiscoveryURL),
 			huh.NewSelect[string]().
 				Title("API Type").
@@ -352,4 +353,21 @@ func NewEditProviderForm(provider domain.Provider, result *EditProviderResult) *
 				Value(&result.ApiType),
 		),
 	).WithHeight(11)
+}
+
+// NewRestoreBackupForm creates a form to select a backup to restore.
+func NewRestoreBackupForm(backups []application.BackupOption, result *string) *huh.Form {
+	opts := make([]huh.Option[string], 0, len(backups))
+	for _, b := range backups {
+		opts = append(opts, huh.NewOption(b.Label, b.Path))
+	}
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Select Backup to Restore").
+				Description("Newest first. Restore overwrites current config.").
+				Options(opts...).
+				Value(result),
+		),
+	)
 }

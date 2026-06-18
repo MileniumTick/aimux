@@ -181,7 +181,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if prev == manageCLIView {
 					return m, m.enterManageCLIView()
 				}
-				return m, nil
+				cmd := m.reenterFormForView(prev)
+				return m, cmd
 			}
 		}
 
@@ -199,10 +200,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.form = nil
 			prev := m.previousView()
 			m.currentView = prev
-			if prev == switchTargetCLIView || prev == switchProviderView {
-				return m, m.enterSwitchView(prev)
-			}
-			return m, nil
+			cmd := m.reenterFormForView(prev)
+			return m, cmd
 		}
 		return m, cmd
 	}
@@ -418,6 +417,8 @@ func (m *model) handleMenuSelection() (tea.Model, tea.Cmd) {
 		return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
 	case menuItemManageCLIs:
 		return m.enterManageCLIs()
+	case menuItemRestore:
+		return m.enterRestoreFlow()
 	case menuItemExit:
 		return m, tea.Quit
 	}
@@ -476,6 +477,52 @@ func (m *model) enterManageCLIs() (tea.Model, tea.Cmd) {
 	m.selectedCLIID = 0
 	m.form = NewSelectCLIForm(clis, &m.selectedCLIID)
 	return m, m.form.Init()
+}
+
+func (m *model) enterRestoreFlow() (tea.Model, tea.Cmd) {
+	clis, err := m.switchUseCases.ListTargetCLIs()
+	if err != nil || len(clis) == 0 {
+		return m, func() tea.Msg {
+			return notificationMsg{message: "No target CLIs configured", isError: true}
+		}
+	}
+	m.targetCLIs = clis
+	m.currentView = restoreCLIView
+	return m, m.startRestoreCLIForm()
+}
+
+// reenterFormForView creates the appropriate form for re-entering a view after
+// Esc/abort in a single-select form. Returns nil if no form is needed.
+func (m *model) reenterFormForView(view viewType) tea.Cmd {
+	switch view {
+	case switchTargetCLIView:
+		m.switchTargetCLIID = 0
+		m.form = NewSelectTargetCLIForm(m.targetCLIs, &m.switchTargetCLIID)
+		m.form.WithHeight(10)
+		return m.form.Init()
+	case switchProviderView:
+		providers, err := m.providerUseCases.List()
+		if err != nil || len(providers) == 0 {
+			return func() tea.Msg {
+				return notificationMsg{message: "No providers available", isError: true}
+			}
+		}
+		m.form = NewSelectProviderForm(providers, &m.switchProviderID)
+		return m.form.Init()
+	case restoreCLIView:
+		return m.startRestoreCLIForm()
+	default:
+		return nil
+	}
+}
+
+func (m *model) startRestoreCLIForm() tea.Cmd {
+	m.selectedCLIID = 0
+	m.restoreCLIName = ""
+	m.restoreSelectedPath = ""
+	m.restoreBackups = nil
+	m.form = NewSelectCLIForm(m.targetCLIs, &m.selectedCLIID)
+	return m.form.Init()
 }
 
 func (m *model) enterSwitchView(view viewType) tea.Cmd {
@@ -580,7 +627,6 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 
 	case switchProviderView:
 		m.form = nil
-		m.currentView = switchMapModelsView
 
 		var targetCLI *domain.TargetCLI
 		for _, c := range m.targetCLIs {
@@ -610,11 +656,24 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 			}
 		}
 		if len(models) == 0 {
+			// Back to provider selection — don't leave user stuck
+			m.currentView = switchProviderView
+			providers, listErr := m.providerUseCases.List()
+			if listErr == nil && len(providers) > 0 {
+				m.form = NewSelectProviderForm(providers, &m.switchProviderID)
+				return m, tea.Batch(
+					m.form.Init(),
+					func() tea.Msg {
+						return notificationMsg{message: "No models for this provider. Try retrying fetch.", isError: true}
+					},
+				)
+			}
 			return m, func() tea.Msg {
-				return notificationMsg{message: "No models available for this provider. Try retrying the fetch.", isError: true}
+				return notificationMsg{message: "No models available for this provider", isError: true}
 			}
 		}
 		m.switchProviderModels = models
+		m.currentView = switchMapModelsView
 
 		form, extractFn := NewMapModelsForm(envVars, models)
 		m.switchExtractFn = extractFn
@@ -714,6 +773,65 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		}
 		m.currentView = dashboardView
 		return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
+
+	case restoreCLIView:
+		m.form = nil
+		if m.selectedCLIID == 0 {
+			m.currentView = dashboardView
+			return m, nil
+		}
+		var cliName string
+		for _, c := range m.targetCLIs {
+			if c.ID == m.selectedCLIID {
+				cliName = c.Name
+				break
+			}
+		}
+		if cliName == "" {
+			m.currentView = dashboardView
+			return m, func() tea.Msg {
+				return notificationMsg{message: "CLI not found", isError: true}
+			}
+		}
+		m.restoreCLIName = cliName
+		backups, err := m.switchUseCases.BackupOptions(cliName)
+		if err != nil {
+			m.currentView = dashboardView
+			return m, func() tea.Msg {
+				return notificationMsg{message: fmt.Sprintf("Failed to list backups: %s", err.Error()), isError: true}
+			}
+		}
+		if len(backups) == 0 {
+			m.currentView = dashboardView
+			return m, func() tea.Msg {
+				return notificationMsg{message: fmt.Sprintf("No backups for '%s'", cliName), isError: false}
+			}
+		}
+		m.restoreBackups = backups
+		m.currentView = restoreBackupView
+		m.form = NewRestoreBackupForm(backups, &m.restoreSelectedPath)
+		return m, m.form.Init()
+
+	case restoreBackupView:
+		m.form = nil
+		m.currentView = dashboardView
+		if m.restoreSelectedPath == "" {
+			return m, nil
+		}
+		if err := m.switchUseCases.RestoreBackup(m.restoreCLIName, m.restoreSelectedPath); err != nil {
+			return m, tea.Batch(
+				func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} },
+				func() tea.Msg {
+					return notificationMsg{message: fmt.Sprintf("Restore failed: %s", err.Error()), isError: true}
+				},
+			)
+		}
+		return m, tea.Batch(
+			func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} },
+			func() tea.Msg {
+				return notificationMsg{message: fmt.Sprintf("Backup restored for '%s'", m.restoreCLIName), isError: false}
+			},
+		)
 	}
 
 	return m, nil
@@ -838,6 +956,10 @@ func (m *model) previousView() viewType {
 		return switchTargetCLIView
 	case switchTargetCLIView, switchConfirmationView:
 		return dashboardView
+	case restoreCLIView:
+		return dashboardView
+	case restoreBackupView:
+		return restoreCLIView
 	default:
 		return dashboardView
 	}
@@ -900,6 +1022,8 @@ func (m *model) isSingleSelectForm() bool {
 		m.currentView == manageCLIView ||
 		m.currentView == editCLIPathView ||
 		m.currentView == switchMapModelsView
+		m.currentView == restoreCLIView ||
+		m.currentView == restoreBackupView
 }
 
 func trimSpaces(s string) string {

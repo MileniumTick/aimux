@@ -13,7 +13,7 @@ import (
 
 // githubRelease represents a GitHub release API response (partial).
 type githubRelease struct {
-	TagName string        `json:"tag_name"`
+	TagName string         `json:"tag_name"`
 	Assets  []releaseAsset `json:"assets"`
 }
 
