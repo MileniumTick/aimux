@@ -35,6 +35,9 @@ cover.html
 # Development scripts
 *.sh
 
+# Pi agent config
+.pi/
+
 # Claude Code local config
 .claude/
 .atl/

@@ -118,29 +118,33 @@ func TestCopilotEnvFile_AnthropicType(t *testing.T) {
 }
 
 func TestCopilotEnvFile_BackupExisting(t *testing.T) {
+	// Backups are centralized outside the source directory; redirect them to a
+	// temp root so the test is isolated and does not touch the real store.
+	t.Setenv("AIMUX_BACKUP_ROOT", filepath.Join(t.TempDir(), "bk"))
+
 	m := &CopilotEnvFile{}
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
 
-	os.WriteFile(path, []byte("EXISTING=value\n"), 0644)
+	original := []byte("EXISTING=value\n")
+	os.WriteFile(path, original, 0644)
 
-	_, err := m.Mutate(path, map[string]string{"COPILOT_MODEL": "new-model"}, defaultCopilotProvider(), map[string]any{
+	result, err := m.Mutate(path, map[string]string{"COPILOT_MODEL": "new-model"}, defaultCopilotProvider(), map[string]any{
 		"provider_type": "openai",
 	})
 	if err != nil {
 		t.Fatalf("Mutate failed: %v", err)
 	}
 
-	entries, _ := os.ReadDir(dir)
-	backupFound := false
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), ".env.aimux-backup-") {
-			backupFound = true
-			break
-		}
+	if result == nil || result.BackupPath == "" {
+		t.Fatal("expected a backup path in BackupResult")
 	}
-	if !backupFound {
-		t.Error("expected backup of existing .env file")
+	if _, err := os.Stat(result.BackupPath); os.IsNotExist(err) {
+		t.Fatalf("backup file does not exist: %s", result.BackupPath)
+	}
+	got, _ := os.ReadFile(result.BackupPath)
+	if string(got) != string(original) {
+		t.Errorf("backup should match original, got %q", string(got))
 	}
 }
 

@@ -66,10 +66,9 @@ func (uc *ProviderUseCases) Update(id int64, baseURL, apiKey, authToken string, 
 	if err := uc.providerRepo.Update(id, baseURL, apiKey, authToken, apiType); err != nil {
 		return err
 	}
-	// Clear models and re-fetch after updating credentials
-	if err := uc.providerRepo.DeleteModelsByProvider(id); err != nil {
-		return fmt.Errorf("clear models after update: %w", err)
-	}
+	// FetchModels -> InsertModels performs an atomic delete+insert inside a single
+	// transaction, so we no longer pre-delete here. The old pre-delete left the
+	// provider with an empty model list whenever the re-fetch failed.
 	if fetchErr := uc.FetchModels(id, baseURL, authToken, apiType); fetchErr != nil {
 		_ = uc.providerRepo.UpdateStatus(id, "error")
 		return fmt.Errorf("provider updated but model fetch failed: %w", fetchErr)

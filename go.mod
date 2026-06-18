@@ -10,7 +10,7 @@ require (
 	modernc.org/sqlite v1.52.0
 )
 
-require golang.org/x/mod v0.37.0 // indirect
+require golang.org/x/mod v0.37.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
