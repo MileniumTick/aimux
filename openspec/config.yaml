@@ -1,0 +1,37 @@
+# openspec/config.yaml
+schema: spec-driven
+
+context: |
+  Tech stack: Go 1.22+, charmbracelet/bubbletea (TUI), charmbracelet/huh (forms),
+    charmbracelet/lipgloss (styling), SQLite (~/.config/aimux/matrix.db)
+  Architecture: TUI-first, single-binary Go application, local SQLite storage
+  Testing: No test runner configured yet (greenfield project)
+  Style: Go standard formatting (gofmt), standard library where possible
+
+testing:
+  strict_tdd: false
+  runner: none
+  runner_reason: "Greenfield project with no go.mod or test files yet. Initialize go.mod and add tests before enabling strict TDD."
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+  apply:
+    - Follow Go style conventions
+    tdd: false
+    test_command: ""
+  verify:
+    test_command: ""
+    build_command: "go build ./..."
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
