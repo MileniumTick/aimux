@@ -31,3 +31,10 @@ cover.html
 
 # Environment files (may contain secrets)
 .env
+
+# Development scripts
+*.sh
+
+# Claude Code local config
+.claude/
+.atl/
