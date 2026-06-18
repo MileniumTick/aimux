@@ -3,10 +3,13 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"strings"
 	"time"
 
 	"github.com/MileniumTick/aimux/internal/application"
 	"github.com/MileniumTick/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/infrastructure/config"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
@@ -25,11 +28,14 @@ const (
 	switchMapModelsView
 	switchConfirmationView
 	switchRegisterModelsView
+	switchManageBindingsView
+	deleteBindingConfirmView
 	manageCLIView
 	editCLIPathView
 	editProviderView
 	restoreCLIView
 	restoreBackupView
+	switchAdvancedConfigView
 )
 
 type (
@@ -110,14 +116,19 @@ type model struct {
 	editProviderResult EditProviderResult
 	deleteConfirm      bool
 
-	switchTargetCLIID      int64
-	switchProviderID       int64
-	switchEnvVars          []string
-	switchExtractFn        func() MapModelsResult
-	switchRegisterResult   RegisterModelsResult
-	switchRegisteredModels []string
-	switchBackupPath       string
-	switchDryRun           *application.DryRunResult
+	switchTargetCLIID          int64
+	switchProviderID           int64
+	switchEnvVars              []string
+	switchExtractFn            func() MapModelsResult
+	switchRegisteredModels     []string
+	switchBackupPath           string
+	switchDryRun               *application.DryRunResult
+	switchModelMetadataSummary []string                 // display lines for advanced config review
+	switchUsesEnvMapping       bool                     // true: Claude Code/Codex map env→model; false: pi/OpenCode list models directly
+	switchInManageMode         bool                     // true when adding another provider to a CLI that already has bindings
+	switchCLIBindings          []domain.ActiveMultiplex // bound providers for selected CLI
+	switchRemoveMode           bool                     // true when picking a provider to remove
+	switchDeleteConfirm        bool                     // true when confirming binding deletion
 
 	selectedProviderID int64
 
@@ -129,9 +140,9 @@ type model struct {
 	notification      string
 	notificationIsMsg bool
 
-	restoreCLIName       string
-	restoreSelectedPath  string
-	restoreBackups       []application.BackupOption
+	restoreCLIName      string
+	restoreSelectedPath string
+	restoreBackups      []application.BackupOption
 
 	updateInfo UpdateInfo
 }
@@ -214,6 +225,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case notificationMsg:
 		m.notification = msg.message
 		m.notificationIsMsg = !msg.isError
+		if msg.isError {
+			log.Printf("TUI error: %s", msg.message)
+		}
 		return m, tea.Tick(4*time.Second, func(_ time.Time) tea.Msg {
 			return clearNotificationMsg{}
 		})
@@ -353,20 +367,98 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedProviderID = m.nextProviderID(m.selectedProviderID)
 		}
 
+	case switchManageBindingsView:
+		switch {
+		case key.Matches(msg, menuKeys.Enter):
+			return m.proceedToDryRun()
+		case key.Matches(msg, menuKeys.Add):
+			m.currentView = switchProviderView
+			providers, _ := m.providerUseCases.List()
+			if len(providers) == 0 {
+				return m, func() tea.Msg {
+					return notificationMsg{message: "No providers available", isError: true}
+				}
+			}
+			m.form = NewSelectProviderForm(providers, &m.switchProviderID)
+			return m, m.form.Init()
+		case key.Matches(msg, menuKeys.Delete):
+			if len(m.switchCLIBindings) == 0 {
+				return m, func() tea.Msg {
+					return notificationMsg{message: "No providers to remove", isError: true}
+				}
+			}
+			m.currentView = switchProviderView
+			var bound []domain.Provider
+			for _, b := range m.switchCLIBindings {
+				p, err := m.providerUseCases.Get(b.ProviderID)
+				if err == nil {
+					bound = append(bound, p)
+				}
+			}
+			if len(bound) == 0 {
+				return m, func() tea.Msg {
+					return notificationMsg{message: "No providers to remove", isError: true}
+				}
+			}
+			m.form = NewSelectProviderToRemoveForm(bound, &m.switchProviderID)
+			m.switchRemoveMode = true
+			return m, m.form.Init()
+		case key.Matches(msg, menuKeys.Esc):
+			m.switchRemoveMode = false
+			m.switchInManageMode = false
+			m.switchCLIBindings = nil
+			m.currentView = dashboardView
+			return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
+		}
+
+	case switchAdvancedConfigView:
+		switch {
+		case key.Matches(msg, menuKeys.Esc):
+			if m.switchInManageMode {
+				return m.enterManageBindingsView()
+			}
+			if m.switchUsesEnvMapping {
+				m.currentView = switchMapModelsView
+				form, extractFn := NewMapModelsForm(m.switchEnvVars, m.switchProviderModels)
+				m.switchExtractFn = extractFn
+				m.form = form
+				return m, m.form.Init()
+			}
+			m.currentView = switchProviderView
+			providers, _ := m.providerUseCases.List()
+			m.form = NewSelectProviderForm(providers, &m.switchProviderID)
+			return m, m.form.Init()
+		case key.Matches(msg, menuKeys.Enter):
+			if m.switchInManageMode {
+				name := m.getProviderName(m.switchProviderID)
+				m.enterManageBindingsView()
+				return m, func() tea.Msg {
+					return notificationMsg{message: fmt.Sprintf("Provider '%s' added", name), isError: false}
+				}
+			}
+			return m.proceedToDryRun()
+		}
+
 	case switchConfirmationView:
 		switch {
 		case key.Matches(msg, menuKeys.Esc):
 			m.switchDryRun = nil
 			m.switchBackupPath = ""
+			m.resetSwitchState()
 			m.currentView = dashboardView
 			return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
 		case key.Matches(msg, menuKeys.Enter):
 			if m.switchDryRun == nil {
 				m.switchBackupPath = ""
+				m.resetSwitchState()
 				m.currentView = dashboardView
 				return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
 			}
-			applyResult, err := m.switchUseCases.Apply(m.switchTargetCLIID, m.switchProviderID)
+			pid := m.switchProviderID
+			if m.switchInManageMode {
+				pid = 0 // apply all
+			}
+			applyResult, err := m.switchUseCases.Apply(m.switchTargetCLIID, pid)
 			m.switchDryRun = nil
 			if err != nil {
 				return m, func() tea.Msg {
@@ -399,7 +491,17 @@ func (m *model) handleMenuSelection() (tea.Model, tea.Cmd) {
 		}
 		return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
 	case menuItemManageCLIs:
-		return m.enterManageCLIs()
+		clis, err := m.switchUseCases.ListTargetCLIs()
+		if err != nil || len(clis) == 0 {
+			return m, func() tea.Msg {
+				return notificationMsg{message: "No target CLIs configured", isError: true}
+			}
+		}
+		m.targetCLIs = clis
+		m.currentView = manageCLIView
+		m.selectedCLIID = 0
+		m.form = NewSelectCLIForm(clis, &m.selectedCLIID)
+		return m, m.form.Init()
 	case menuItemRestore:
 		return m.enterRestoreFlow()
 	case menuItemExit:
@@ -409,6 +511,7 @@ func (m *model) handleMenuSelection() (tea.Model, tea.Cmd) {
 }
 
 func (m *model) startSwitchFlow() (tea.Model, tea.Cmd) {
+	m.resetSwitchState()
 	m.currentView = switchTargetCLIView
 
 	clis, err := m.switchUseCases.ListTargetCLIs()
@@ -448,20 +551,6 @@ func (m *model) startSwitchFlowCmd() tea.Cmd {
 	return nil
 }
 
-func (m *model) enterManageCLIs() (tea.Model, tea.Cmd) {
-	clis, err := m.switchUseCases.ListTargetCLIs()
-	if err != nil || len(clis) == 0 {
-		return m, func() tea.Msg {
-			return notificationMsg{message: "No target CLIs configured", isError: true}
-		}
-	}
-	m.targetCLIs = clis
-	m.currentView = manageCLIView
-	m.selectedCLIID = 0
-	m.form = NewSelectCLIForm(clis, &m.selectedCLIID)
-	return m, m.form.Init()
-}
-
 func (m *model) enterRestoreFlow() (tea.Model, tea.Cmd) {
 	clis, err := m.switchUseCases.ListTargetCLIs()
 	if err != nil || len(clis) == 0 {
@@ -478,6 +567,16 @@ func (m *model) enterRestoreFlow() (tea.Model, tea.Cmd) {
 // Esc/abort in a single-select form. Returns nil if no form is needed.
 func (m *model) reenterFormForView(view viewType) tea.Cmd {
 	switch view {
+	case manageCLIView:
+		if len(m.targetCLIs) > 0 {
+			m.selectedCLIID = m.targetCLIs[0].ID
+		}
+		return nil
+	case switchManageBindingsView:
+		m.switchRemoveMode = false
+		bindings, _ := m.switchUseCases.ListBindingsForCLI(m.switchTargetCLIID)
+		m.switchCLIBindings = bindings
+		return nil
 	case switchTargetCLIView:
 		m.switchTargetCLIID = 0
 		m.form = NewSelectTargetCLIForm(m.targetCLIs, &m.switchTargetCLIID)
@@ -583,20 +682,54 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 
 	case switchTargetCLIView:
 		m.form = nil
-		m.currentView = switchProviderView
 
+		// Check if this CLI uses env mapping (Claude Code, Codex).
+		// Env-mapping CLIs always go to provider selection (replacing any existing).
+		// pi/OpenCode/Copilot go to manage view when they already have bindings.
+		usesEnv := false
+		for _, c := range m.targetCLIs {
+			if c.ID == m.switchTargetCLIID {
+				usesEnv = c.Mutator == "claude-settings-json" || c.Mutator == "codex-config-toml"
+				break
+			}
+		}
+
+		if !usesEnv {
+			bindings, _ := m.switchUseCases.ListBindingsForCLI(m.switchTargetCLIID)
+			if len(bindings) > 0 {
+				return m.enterManageBindingsView()
+			}
+		}
+
+		// Go straight to provider selection
+		m.switchInManageMode = false
+		m.currentView = switchProviderView
 		providers, err := m.providerUseCases.List()
 		if err != nil || len(providers) == 0 {
 			return m, func() tea.Msg {
 				return notificationMsg{message: "No providers available", isError: true}
 			}
 		}
-
 		m.form = NewSelectProviderForm(providers, &m.switchProviderID)
 		return m, m.form.Init()
 
 	case switchProviderView:
 		m.form = nil
+
+		// Remove mode: form complete → go to confirmation
+		if m.switchRemoveMode {
+			m.switchRemoveMode = false
+			if m.switchProviderID == 0 {
+				return m, func() tea.Msg {
+					return notificationMsg{message: "No provider selected", isError: true}
+				}
+			}
+			m.switchDeleteConfirm = false
+			providerName := m.getProviderName(m.switchProviderID)
+			m.currentView = deleteBindingConfirmView
+			m.form = NewDeleteConfirmForm(providerName, &m.switchDeleteConfirm)
+			return m, m.form.Init()
+		}
 
 		var targetCLI *domain.TargetCLI
 		for _, c := range m.targetCLIs {
@@ -643,11 +776,38 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 			}
 		}
 		m.switchProviderModels = models
-		m.currentView = switchMapModelsView
 
-		form, extractFn := NewMapModelsForm(envVars, models)
-		m.switchExtractFn = extractFn
-		m.form = form
+		// Determine flow: env var mapping (Claude/Codex) or direct model list (pi/OpenCode)
+		m.switchUsesEnvMapping = targetCLI.Mutator == "claude-settings-json" || targetCLI.Mutator == "codex-config-toml"
+
+		if m.switchUsesEnvMapping {
+			m.currentView = switchMapModelsView
+			form, extractFn := NewMapModelsForm(envVars, models)
+			m.switchExtractFn = extractFn
+			m.form = form
+		} else {
+			// pi/OpenCode/Copilot: skip env mapping, go to model selection
+			// These CLIs don't use env var → model mapping; they list models directly.
+			// Store only _registered metadata so the mutator knows which models to include.
+			registered := make([]string, 0, len(models))
+			for _, mdl := range models {
+				registered = append(registered, mdl.ModelName)
+			}
+			m.switchRegisteredModels = registered
+
+			// Mapping just stores _registered metadata — no env var keys needed.
+			mappings := map[string]string{"_registered": strings.Join(registered, ",")}
+			if err := m.switchUseCases.BindProfile(m.switchTargetCLIID, m.switchProviderID, mappings); err != nil {
+				return m, func() tea.Msg {
+					return notificationMsg{message: fmt.Sprintf("Bind failed: %s", err.Error()), isError: true}
+				}
+			}
+
+			m.currentView = switchAdvancedConfigView
+
+			m.switchModelMetadataSummary = buildMetadataSummary(registered, m.switchProviderID, m.switchUseCases)
+			return m, nil
+		}
 		return m, m.form.Init()
 
 	case switchMapModelsView:
@@ -660,89 +820,81 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Build pre-selected set from mapped models
-		preSelected := make(map[string]bool, len(result.Mappings))
+		// Auto-register all non-empty model IDs from mappings — no redundant checkbox step.
+		// Collect unique model IDs from mapping values (variant names like "model:variant").
+		seen := make(map[string]bool)
+		var registered []string
 		for _, v := range result.Mappings {
-			if v != "" {
-				preSelected[v] = true
+			if v != "" && !seen[v] {
+				seen[v] = true
+				registered = append(registered, v)
 			}
 		}
+		m.switchRegisteredModels = registered
 
-		m.switchRegisterResult = RegisterModelsResult{}
-		m.currentView = switchRegisterModelsView
-		m.form = NewRegisterModelsForm(m.switchProviderModels, preSelected, &m.switchRegisterResult)
-		return m, m.form.Init()
-
-	case switchRegisterModelsView:
-		m.form = nil
-
-		// Update model_mappings to include _registered list
-		m.switchRegisteredModels = m.switchRegisterResult.RegisteredModels
-		if len(m.switchRegisteredModels) > 0 {
+		// Store _registered list in bindings
+		if len(registered) > 0 {
 			currentMappings, err := m.switchUseCases.GetBoundModels(m.switchTargetCLIID)
 			if err == nil {
-				// Add _registered to the stored mappings
 				updated := make(map[string]string, len(currentMappings)+1)
 				for k, v := range currentMappings {
 					updated[k] = v
 				}
-				// Store as comma-separated in a single key
-				registeredStr := ""
-				for i, r := range m.switchRegisteredModels {
-					if i > 0 {
-						registeredStr += ","
-					}
-					registeredStr += r
-				}
-				updated["_registered"] = registeredStr
+				updated["_registered"] = strings.Join(registered, ",")
 				_ = m.switchUseCases.BindProfile(m.switchTargetCLIID, m.switchProviderID, updated)
 			}
 		}
 
-		dryRun, err := m.switchUseCases.DryRun(m.switchTargetCLIID, m.switchProviderID)
-		if err != nil {
-			return m, func() tea.Msg {
-				return notificationMsg{message: fmt.Sprintf("Dry-run failed: %s", err.Error()), isError: true}
-			}
-		}
-		m.switchDryRun = dryRun
-		m.switchBackupPath = ""
-		m.currentView = switchConfirmationView
+		// Build model metadata summary and go to advanced config review
+		m.switchModelMetadataSummary = buildMetadataSummary(registered, m.switchProviderID, m.switchUseCases)
+		m.currentView = switchAdvancedConfigView
 		return m, nil
 
 	case manageCLIView:
 		m.form = nil
-		if m.selectedCLIID == 0 {
-			m.currentView = dashboardView
-			return m, nil
-		}
-		var cli *domain.TargetCLI
-		for i := range m.targetCLIs {
-			if m.targetCLIs[i].ID == m.selectedCLIID {
-				cli = &m.targetCLIs[i]
-				break
-			}
-		}
-		if cli == nil {
-			m.currentView = dashboardView
-			return m, nil
-		}
-		m.currentView = editCLIPathView
-		m.editCLIPathResult = EditCLIPathResult{}
-		m.form = NewEditCLIPathForm(cli, &m.editCLIPathResult)
-		return m, m.form.Init()
+		m.currentView = dashboardView
+		return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
 
 	case editCLIPathView:
 		m.form = nil
+		m.currentView = manageCLIView
 		if m.editCLIPathResult.ConfigPath != "" {
 			if err := m.switchUseCases.UpdateCLIConfigPath(m.editCLIPathResult.CLIID, m.editCLIPathResult.ConfigPath); err != nil {
 				return m, func() tea.Msg {
-					return notificationMsg{message: fmt.Sprintf("Failed to update CLI path: %s", err.Error()), isError: true}
+					return notificationMsg{message: fmt.Sprintf("Update failed: %s", err.Error()), isError: true}
 				}
 			}
 		}
-		m.currentView = dashboardView
 		return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
+
+	case deleteBindingConfirmView:
+		m.form = nil
+		m.currentView = switchManageBindingsView
+		if m.switchDeleteConfirm {
+			log.Printf("removing binding: cli=%d provider=%d", m.switchTargetCLIID, m.switchProviderID)
+			if err := m.switchUseCases.RemoveBinding(m.switchTargetCLIID, m.switchProviderID); err != nil {
+				return m, func() tea.Msg {
+					return notificationMsg{message: fmt.Sprintf("Remove failed: %s", err.Error()), isError: true}
+				}
+			}
+			log.Printf("regenerating config after remove")
+			if _, err := m.switchUseCases.Apply(m.switchTargetCLIID, 0); err != nil {
+				log.Printf("config regenerate failed: %v", err)
+			}
+			bindings, _ := m.switchUseCases.ListBindingsForCLI(m.switchTargetCLIID)
+			m.switchCLIBindings = bindings
+			if len(bindings) == 0 {
+				if err := m.switchUseCases.ClearCLIConfig(m.switchTargetCLIID); err != nil {
+					log.Printf("clear config failed: %v", err)
+				}
+				m.switchInManageMode = false
+				m.switchCLIBindings = nil
+				m.currentView = dashboardView
+				return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
+			}
+			return m.enterManageBindingsView()
+		}
+		return m.enterManageBindingsView()
 
 	case restoreCLIView:
 		m.form = nil
@@ -846,6 +998,14 @@ func (m *model) View() string {
 		content = RenderProviderList(m.providers, m.selectedProviderID, m.width)
 		content = viewPadding.Render(content)
 
+	case switchManageBindingsView:
+		content = m.renderManageBindings()
+		content = viewPadding.Render(content)
+
+	case switchAdvancedConfigView:
+		content = m.renderAdvancedConfigReview()
+		content = viewPadding.Render(content)
+
 	case switchConfirmationView:
 		if m.switchDryRun != nil {
 			envBlock := ""
@@ -917,14 +1077,32 @@ func (m *model) previousView() viewType {
 	switch m.currentView {
 	case addProviderView, deleteProviderView, editProviderView:
 		return providerListView
-	case manageCLIView, editCLIPathView:
-		return dashboardView
+	case switchAdvancedConfigView:
+		if m.switchInManageMode {
+			return switchManageBindingsView
+		}
+		return switchRegisterModelsView
 	case switchMapModelsView:
+		if m.switchInManageMode {
+			return switchManageBindingsView
+		}
 		return switchProviderView
 	case switchRegisterModelsView:
 		return switchMapModelsView
 	case switchProviderView:
+		if m.switchRemoveMode {
+			return switchManageBindingsView
+		}
+		if m.switchInManageMode {
+			return switchManageBindingsView
+		}
 		return switchTargetCLIView
+	case manageCLIView:
+		return dashboardView
+	case deleteBindingConfirmView:
+		return switchManageBindingsView
+	case switchManageBindingsView:
+		return dashboardView
 	case switchTargetCLIView, switchConfirmationView:
 		return dashboardView
 	case restoreCLIView:
@@ -987,10 +1165,206 @@ func (m *model) prevProviderID(current int64) int64 {
 	return 0
 }
 
+func (m *model) nextCLIID(current int64) int64 {
+	found := false
+	for _, c := range m.targetCLIs {
+		if found {
+			return c.ID
+		}
+		if c.ID == current {
+			found = true
+		}
+	}
+	if len(m.targetCLIs) > 0 {
+		return m.targetCLIs[0].ID
+	}
+	return 0
+}
+
+func (m *model) prevCLIID(current int64) int64 {
+	var prev int64
+	for _, c := range m.targetCLIs {
+		if c.ID == current {
+			if prev != 0 {
+				return prev
+			}
+			return current
+		}
+		prev = c.ID
+	}
+	if len(m.targetCLIs) > 0 {
+		return m.targetCLIs[len(m.targetCLIs)-1].ID
+	}
+	return 0
+}
+
+// resetSwitchState clears all switch-related fields to avoid stale state
+// when returning to the dashboard or starting a new switch flow.
+func (m *model) resetSwitchState() {
+	m.switchTargetCLIID = 0
+	m.switchProviderID = 0
+	m.switchEnvVars = nil
+	m.switchExtractFn = nil
+	m.switchRegisteredModels = nil
+	m.switchBackupPath = ""
+	m.switchDryRun = nil
+	m.switchModelMetadataSummary = nil
+	m.switchUsesEnvMapping = false
+	m.switchInManageMode = false
+	m.switchCLIBindings = nil
+	m.switchRemoveMode = false
+	m.switchDeleteConfirm = false
+	m.switchProviderModels = nil
+}
+
+func (m *model) proceedToDryRun() (tea.Model, tea.Cmd) {
+	// In manage mode, apply all providers (0 = all).
+	// In single mode, apply only the current provider.
+	pid := m.switchProviderID
+	if m.switchInManageMode {
+		pid = 0
+	}
+	dryRun, err := m.switchUseCases.DryRun(m.switchTargetCLIID, pid)
+	if err != nil {
+		return m, func() tea.Msg {
+			return notificationMsg{message: fmt.Sprintf("Dry-run failed: %s", err.Error()), isError: true}
+		}
+	}
+	m.switchDryRun = dryRun
+	m.switchBackupPath = ""
+	m.currentView = switchConfirmationView
+	return m, nil
+}
+
+// enterManageBindingsView refreshes the bound providers list for the selected
+// CLI and transitions to the manage bindings view.
+func (m *model) enterManageBindingsView() (tea.Model, tea.Cmd) {
+	bindings, _ := m.switchUseCases.ListBindingsForCLI(m.switchTargetCLIID)
+	m.switchCLIBindings = bindings
+	m.switchRemoveMode = false
+	m.switchInManageMode = len(bindings) > 0
+	m.currentView = switchManageBindingsView
+	return m, nil
+}
+
+// renderAdvancedConfigReview builds a human-readable summary of the model
+// metadata that will be written to the target CLI's config.
+func (m *model) renderManageBindings() string {
+	var b strings.Builder
+	cliName := ""
+	for _, tc := range m.targetCLIs {
+		if tc.ID == m.switchTargetCLIID {
+			cliName = tc.Name
+			break
+		}
+	}
+	b.WriteString(fmt.Sprintf("\n  Provider Bindings — %s\n\n", cliName))
+
+	if len(m.switchCLIBindings) == 0 {
+		b.WriteString("  No providers bound yet.\n")
+	} else {
+		for i, bp := range m.switchCLIBindings {
+			mappings := ""
+			var mps map[string]string
+			if err := json.Unmarshal([]byte(bp.ModelMappings), &mps); err == nil {
+				models := []string{}
+				for k, v := range mps {
+					if k != "_registered" && v != "" {
+						models = append(models, v)
+					}
+				}
+				if len(models) > 0 {
+					mappings = strings.Join(models, ", ")
+				} else if reg, ok := mps["_registered"]; ok {
+					mappings = reg
+				}
+			}
+			b.WriteString(fmt.Sprintf("  %d. %s\n", i+1, bp.ProviderName))
+			if mappings != "" && len(mappings) > 60 {
+				mappings = mappings[:57] + "..."
+			}
+			if mappings != "" {
+				b.WriteString(fmt.Sprintf("     Models: %s\n", mappings))
+			}
+			b.WriteString(fmt.Sprintf("     Bound: %s\n", bp.ActivatedAt))
+		}
+	}
+
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("[A] Add provider  [D] Remove  [Enter] Apply all  [Esc] Back"))
+	b.WriteString("\n")
+	return b.String()
+}
+
+func (m *model) renderAdvancedConfigReview() string {
+	var b strings.Builder
+	b.WriteString("\n  Advanced Model Configuration\n\n")
+	b.WriteString(fmt.Sprintf("  Registered models: %d\n\n", len(m.switchRegisteredModels)))
+
+	if len(m.switchModelMetadataSummary) == 0 {
+		b.WriteString("  No advanced metadata available for these models.\n")
+		b.WriteString("  Default settings will be used.\n")
+	} else {
+		for _, line := range m.switchModelMetadataSummary {
+			b.WriteString("  " + line + "\n")
+		}
+	}
+
+	b.WriteString("\n")
+	b.WriteString(helpStyle.Render("Enter = Proceed to apply · Esc = Back to model selection"))
+	return b.String()
+}
+
+// buildMetadataSummary builds display lines for model metadata.
+func buildMetadataSummary(registeredModels []string, providerID int64, useCases *application.SwitchUseCases) []string {
+	if len(registeredModels) == 0 {
+		return nil
+	}
+
+	models, err := useCases.GetModelsForProvider(providerID)
+	if err != nil {
+		return []string{fmt.Sprintf("  Warning: could not load model metadata: %s", err)}
+	}
+
+	var lines []string
+	for _, name := range registeredModels {
+		// Find model metadata
+		for _, m := range models {
+			if m.ModelName == name && len(m.Metadata) > 0 {
+				line := fmt.Sprintf("  • %s", name)
+				if cw, ok := m.Metadata[domain.MetaContextWindow]; ok {
+					line += fmt.Sprintf(" | ctx: %v", cw)
+				}
+				if mt, ok := m.Metadata[domain.MetaMaxTokens]; ok {
+					line += fmt.Sprintf(" | max: %v", mt)
+				}
+				if r, ok := m.Metadata[domain.MetaReasoning]; ok && r == true {
+					line += " | reasoning"
+				}
+				if cost, ok := m.Metadata[domain.MetaCost]; ok {
+					line += fmt.Sprintf(" | cost: %s", config.FormatCost(cost))
+				}
+				if suffix, ok := m.Metadata[domain.MetaContextSuffix]; ok {
+					line += fmt.Sprintf(" | suffix: %v", suffix)
+				}
+				lines = append(lines, line)
+				break
+			}
+		}
+	}
+
+	if len(lines) == 0 {
+		lines = append(lines, "  No metadata available for registered models.")
+	}
+
+	return lines
+}
+
 func (m *model) isSingleSelectForm() bool {
 	return m.currentView == switchTargetCLIView ||
 		m.currentView == switchProviderView ||
 		m.currentView == manageCLIView ||
+		m.currentView == deleteBindingConfirmView ||
 		m.currentView == restoreCLIView ||
 		m.currentView == restoreBackupView
 }

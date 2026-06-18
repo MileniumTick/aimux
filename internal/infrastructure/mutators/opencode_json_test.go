@@ -14,6 +14,7 @@ func defaultOpenCodeProvider() domain.Provider {
 		Name:    "Bifrost",
 		BaseURL: "https://bifrost.example.com/v1",
 		APIKey:  "sk-bifrost-test",
+		ApiType: domain.ApiTypeOpenAI,
 	}
 }
 

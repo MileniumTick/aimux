@@ -3,6 +3,7 @@ package sqlite
 import (
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/MileniumTick/aimux/internal/domain"
@@ -31,6 +32,12 @@ func setupTestDB(t *testing.T) *sql.DB {
 	}
 	if err := MigrationAddModelMetadataColumn(db); err != nil {
 		t.Fatalf("failed to add metadata column: %v", err)
+	}
+	if err := MigrationMultiProvider(db); err != nil {
+		t.Fatalf("failed to migrate multi-provider: %v", err)
+	}
+	if err := MigrationRemoveOpenCodeNpm(db); err != nil {
+		t.Fatalf("failed to migrate remove opencode npm: %v", err)
 	}
 	if err := CreateIndexes(db); err != nil {
 		t.Fatalf("failed to create indexes: %v", err)
@@ -244,7 +251,7 @@ func TestGetActiveMultiplex_NotFound(t *testing.T) {
 	}
 }
 
-func TestSetActiveMultiplex_Replace(t *testing.T) {
+func TestSetActiveMultiplex_MultiProvider(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
 
@@ -254,12 +261,29 @@ func TestSetActiveMultiplex_Replace(t *testing.T) {
 	pid1, _ := providerRepo.Add("Prov1", "https://p1.test", "", "k1", "t1", domain.ApiTypeOpenAI)
 	pid2, _ := providerRepo.Add("Prov2", "https://p2.test", "", "k2", "t2", domain.ApiTypeOpenAI)
 
+	// Set two different providers for the same CLI
 	muxRepo.SetActive(1, pid1, `{"var": "model1"}`)
 	muxRepo.SetActive(1, pid2, `{"var": "model2"}`)
 
-	am, _ := muxRepo.GetActive(1)
-	if am.ProviderID != pid2 {
-		t.Errorf("expected provider_id %d after replace, got %d", pid2, am.ProviderID)
+	// ListForCLI should return both
+	all, _ := muxRepo.ListForCLI(1)
+	if len(all) != 2 {
+		t.Fatalf("expected 2 multiplexes, got %d", len(all))
+	}
+
+	// Update existing binding (same CLI + provider) should replace
+	muxRepo.SetActive(1, pid1, `{"var": "updated"}`)
+	all, _ = muxRepo.ListForCLI(1)
+	if len(all) != 2 {
+		t.Fatalf("expected 2 multiplexes after update, got %d", len(all))
+	}
+	// Find pid1 and check mappings
+	for _, am := range all {
+		if am.ProviderID == pid1 {
+			if !strings.Contains(am.ModelMappings, "updated") {
+				t.Errorf("expected updated mappings for pid1, got %s", am.ModelMappings)
+			}
+		}
 	}
 }
 

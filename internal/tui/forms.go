@@ -117,6 +117,15 @@ func NewSelectTargetCLIForm(clis []domain.TargetCLI, result *int64) *huh.Form {
 // NewSelectProviderForm creates a form to select a provider.
 // All providers are shown, with status label for non-active ones.
 func NewSelectProviderForm(providers []domain.Provider, result *int64) *huh.Form {
+	return newSelectProviderForm("Select Provider", providers, result)
+}
+
+// NewSelectProviderToRemoveForm creates a form to select a provider to remove.
+func NewSelectProviderToRemoveForm(providers []domain.Provider, result *int64) *huh.Form {
+	return newSelectProviderForm("Select provider to remove", providers, result)
+}
+
+func newSelectProviderForm(title string, providers []domain.Provider, result *int64) *huh.Form {
 	opts := make([]huh.Option[int64], 0, len(providers))
 	for _, p := range providers {
 		label := p.Name
@@ -128,7 +137,7 @@ func NewSelectProviderForm(providers []domain.Provider, result *int64) *huh.Form
 	return huh.NewForm(
 		huh.NewGroup(
 			huh.NewSelect[int64]().
-				Title("Select Provider").
+				Title(title).
 				Options(opts...).
 				Value(result),
 		),
@@ -138,39 +147,6 @@ func NewSelectProviderForm(providers []domain.Provider, result *int64) *huh.Form
 // MapModelsResult holds the result of the model mapping form.
 type MapModelsResult struct {
 	Mappings map[string]string
-}
-
-// RegisterModelsResult holds the result of the model registration form.
-type RegisterModelsResult struct {
-	RegisteredModels []string
-}
-
-// NewRegisterModelsForm creates a multi-select form for choosing which models
-// to register in the target CLI's config file. Pre-selects the currently mapped
-// models as defaults.
-func NewRegisterModelsForm(models []domain.ProviderModel, preSelected map[string]bool, result *RegisterModelsResult) *huh.Form {
-	opts := make([]huh.Option[string], 0, len(models))
-	for _, m := range models {
-		opts = append(opts, huh.NewOption(m.ModelName, m.ModelName))
-	}
-
-	// Default selections: models that are already mapped
-	defaults := make([]string, 0, len(preSelected))
-	for _, m := range models {
-		if preSelected[m.ModelName] {
-			defaults = append(defaults, m.ModelName)
-		}
-	}
-
-	return huh.NewForm(
-		huh.NewGroup(
-			huh.NewMultiSelect[string]().
-				Title("Register Models").
-				Description("Select which models to include in the config file.").
-				Options(opts...).
-				Value(&result.RegisteredModels),
-		),
-	).WithHeight(10)
 }
 
 // EditCLIPathResult holds the values from the Edit CLI Path form.
@@ -248,6 +224,7 @@ func NewMapModelsForm(envVars []string, models []domain.ProviderModel) (*huh.For
 			huh.NewSelect[string]().
 				Title(ev).
 				Description(fmt.Sprintf("Select model for %s", ev)).
+				Filtering(true).
 				Options(itemOpts...).
 				Value(&bindings[i].value),
 		)

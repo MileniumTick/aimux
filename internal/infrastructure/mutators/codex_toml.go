@@ -17,7 +17,9 @@ import (
 // Registered as: "codex-config-toml"
 type CodexConfigTOML struct{}
 
-// Mutate reads the TOML config, builds model_providers section, and writes
+// Mutate reads the TOML config, builds model_providers section with optional
+// advanced options (http_headers, query_params, wire_api, requires_openai_auth,
+// request_max_retries, stream_max_retries, supports_websockets), and writes
 // atomically with backup.
 func (m *CodexConfigTOML) Mutate(
 	configPath string,
@@ -75,15 +77,46 @@ func (m *CodexConfigTOML) Mutate(
 	// Derive env key name from provider ID
 	envKeyName := "CODEX_" + strings.ToUpper(providerID) + "_API_KEY"
 
-	wireAPI, _ := mutatorConfig["wire_api"].(string)
-
+	// Build provider entry with all supported fields
 	providerEntry := map[string]any{
-		"name":    provider.Name,
+		"name":     provider.Name,
 		"base_url": provider.BaseURL,
-		"env_key": envKeyName,
+		"env_key":  envKeyName,
 	}
-	if wireAPI != "" {
+
+	// Optional wire_api (chat/responses)
+	if wireAPI, ok := mutatorConfig["wire_api"].(string); ok && wireAPI != "" {
 		providerEntry["wire_api"] = wireAPI
+	}
+
+	// HTTP headers
+	if headers := extractProviderHeaders(mutatorConfig); len(headers) > 0 {
+		providerEntry["http_headers"] = headers
+	}
+
+	// Query params
+	if qp, ok := mutatorConfig["query_params"].(map[string]any); ok && len(qp) > 0 {
+		providerEntry["query_params"] = qp
+	}
+
+	// requires_openai_auth
+	if roa, ok := mutatorConfig["requires_openai_auth"].(bool); ok {
+		providerEntry["requires_openai_auth"] = roa
+	}
+
+	// request_max_retries
+	if rmr, ok := mutatorConfig["request_max_retries"].(int64); ok {
+		providerEntry["request_max_retries"] = rmr
+	}
+
+	// stream_max_retries
+	if smr, ok := mutatorConfig["stream_max_retries"].(int64); ok {
+		providerEntry["stream_max_retries"] = smr
+	}
+
+	// supports_websockets
+	if sw, ok := mutatorConfig["supports_websockets"].(bool); ok {
+		providerEntry["supports_websockets"] = sw
 	}
 
 	modelProviders[providerID] = providerEntry

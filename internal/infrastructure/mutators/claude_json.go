@@ -7,13 +7,23 @@ import (
 	"github.com/MileniumTick/aimux/internal/infrastructure/config"
 )
 
+// defaultClaudeExtraEnv provides recommended default env vars for Claude Code.
+// Users can override these via mutator_config.extra_env.
+// ponytail: sensible defaults; users who know better can set extra_env.
+var defaultClaudeExtraEnv = map[string]string{
+	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+	"CLAUDE_CODE_EFFORT_LEVEL":                 "max",
+}
+
 // ClaudeSettingsJSON mutates Claude Code's settings.json by building an env
-// block from model mappings and provider API key.
+// block from model mappings, provider API key, and optional extra env vars.
 // Registered as: "claude-settings-json"
 type ClaudeSettingsJSON struct{}
 
 // Mutate reads the JSON config, builds an env block from model mappings, sets
-// the API key, and writes atomically with backup.
+// the API key, writes extra env vars (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
+// CLAUDE_CODE_EFFORT_LEVEL), appends context window suffix to model IDs based
+// on model metadata, and writes atomically with backup.
 func (m *ClaudeSettingsJSON) Mutate(
 	configPath string,
 	modelMappings map[string]string,
@@ -51,15 +61,15 @@ func (m *ClaudeSettingsJSON) Mutate(
 		}
 	}
 
-	// Write model mappings (skip empty values).
-	// Auto-detect 1M context window from model metadata and append "[1m]"
-	// suffix — Claude Code uses this to enable full context window.
+	// Write model mappings with context window suffix (skip empty values).
+	// Claude Code uses "[1m]" for 1M context, "[200k]" for 200K, etc.
 	modelMeta, _ := mutatorConfig["_model_metadata"].(map[string]any)
 	for key, val := range modelMappings {
 		if val != "" {
 			if md, ok := modelMeta[val].(map[string]any); ok {
-				if cw, ok := md["context_window"].(float64); ok && cw >= 1_000_000 {
-					val = val + "[1m]"
+				suffix := config.LookupContextSuffix(md)
+				if suffix != "" {
+					val = val + suffix
 				}
 			}
 			env[key] = val
@@ -81,6 +91,9 @@ func (m *ClaudeSettingsJSON) Mutate(
 		env["ANTHROPIC_BASE_URL"] = provider.BaseURL
 	}
 
+	// Extra Claude Code env vars (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, etc.)
+	applyClaudeExtraEnv(env, mutatorConfig)
+
 	root["env"] = env
 
 	if err := config.WriteAtomicJSON(configPath, root); err != nil {
@@ -91,4 +104,29 @@ func (m *ClaudeSettingsJSON) Mutate(
 	config.PruneBackups(configPath, 5)
 
 	return backupResult, nil
+}
+
+// applyClaudeExtraEnv writes default and user-override extra env vars into the env map.
+// Defaults: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1, CLAUDE_CODE_EFFORT_LEVEL=max.
+// User can override via mutator_config.extra_env, or disable all extras via
+// mutator_config.extra_env_disabled=true.
+// ponytail: defaults are sensible; override via extra_env when you know better.
+func applyClaudeExtraEnv(env map[string]any, mutatorConfig map[string]any) {
+	if disabled, ok := mutatorConfig["extra_env_disabled"].(bool); ok && disabled {
+		return
+	}
+
+	// Apply defaults (won't overwrite existing keys from merge above)
+	for k, v := range defaultClaudeExtraEnv {
+		if _, exists := env[k]; !exists {
+			env[k] = v
+		}
+	}
+
+	// Apply user overrides from mutator_config.extra_env
+	if extra, ok := mutatorConfig["extra_env"].(map[string]any); ok {
+		for k, v := range extra {
+			env[k] = v
+		}
+	}
 }

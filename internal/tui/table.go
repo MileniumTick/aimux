@@ -2,10 +2,11 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
 	"github.com/MileniumTick/aimux/internal/domain"
+	"github.com/charmbracelet/lipgloss"
 )
 
 var (
@@ -43,9 +44,9 @@ var (
 func RenderTable(providers []domain.Provider, activeMultiplexes []domain.ActiveMultiplex, targetCLIs []domain.TargetCLI, termWidth int) string {
 	var b strings.Builder
 
-	activeByCLI := make(map[int64]domain.ActiveMultiplex)
+	activeByCLI := make(map[int64][]domain.ActiveMultiplex)
 	for _, am := range activeMultiplexes {
-		activeByCLI[am.TargetCLIID] = am
+		activeByCLI[am.TargetCLIID] = append(activeByCLI[am.TargetCLIID], am)
 	}
 
 	availWidth := termWidth
@@ -112,11 +113,22 @@ func RenderTable(providers []domain.Provider, activeMultiplexes []domain.ActiveM
 			rowStyle = rowOddStyle
 		}
 
-		am, hasActive := activeByCLI[cli.ID]
-		if hasActive {
+		ams, hasActive := activeByCLI[cli.ID]
+		if hasActive && len(ams) > 0 {
+			first := ams[0]
+
+			providerName := first.ProviderName
+			if providerName == "" {
+				providerName = "---"
+			}
+			if len(ams) > 1 {
+				providerName = fmt.Sprintf("%s +%d", providerName, len(ams)-1)
+			}
+
+			// Collect model IDs from first binding for display
 			mappings := make(map[string]string)
 			modelsStr := "---"
-			if err := json.Unmarshal([]byte(am.ModelMappings), &mappings); err == nil && len(mappings) > 0 {
+			if err := json.Unmarshal([]byte(first.ModelMappings), &mappings); err == nil && len(mappings) > 0 {
 				modelIDs := make([]string, 0, len(mappings))
 				for _, v := range mappings {
 					if v != "" {
@@ -126,11 +138,6 @@ func RenderTable(providers []domain.Provider, activeMultiplexes []domain.ActiveM
 				if len(modelIDs) > 0 {
 					modelsStr = strings.Join(modelIDs, ", ")
 				}
-			}
-
-			providerName := am.ProviderName
-			if providerName == "" {
-				providerName = "---"
 			}
 
 			row := lipgloss.JoinHorizontal(lipgloss.Top,

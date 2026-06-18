@@ -182,6 +182,68 @@ func columnExists(db *sql.DB, table, column string) (bool, error) {
 	return false, rows.Err()
 }
 
+// MigrationRemoveOpenCodeNpm removes the hardcoded npm override from the
+// opencode CLI's mutator_config. The npm package is now derived dynamically
+// from the provider's ApiType (openai-compatible, anthropic, google).
+// Idempotent: only affects rows that still have the old npm value.
+func MigrationRemoveOpenCodeNpm(db *sql.DB) error {
+	_, err := db.Exec(`
+		UPDATE target_clis
+		SET mutator_config = '{"provider_id":"custom"}'
+		WHERE name = 'opencode'
+		AND mutator_config = '{"provider_id":"custom","npm":"@ai-sdk/openai-compatible"}'
+	`)
+	if err != nil {
+		return fmt.Errorf("remove opencode npm migration: %w", err)
+	}
+	return nil
+}
+
+// MigrationMultiProvider changes active_multiplex from single-row PK to
+// composite (target_cli_id, provider_id) PK so a CLI can bind multiple providers.
+// Idempotent: checks if the table already uses the new schema.
+func MigrationMultiProvider(db *sql.DB) error {
+	hasID, err := columnExists(db, "active_multiplex", "id")
+	if err != nil {
+		return err
+	}
+	if hasID {
+		return nil // already migrated
+	}
+
+	// Create new table with composite PK
+	if _, err := db.Exec(`
+		CREATE TABLE active_multiplex_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			target_cli_id INTEGER NOT NULL REFERENCES target_clis(id) ON DELETE CASCADE,
+			provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+			model_mappings TEXT NOT NULL,
+			activated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			UNIQUE(target_cli_id, provider_id)
+		)
+	`); err != nil {
+		return fmt.Errorf("create new active_multiplex table: %w", err)
+	}
+
+	// Copy existing data
+	if _, err := db.Exec(`
+		INSERT INTO active_multiplex_new (target_cli_id, provider_id, model_mappings, activated_at)
+		SELECT target_cli_id, provider_id, model_mappings, activated_at FROM active_multiplex
+	`); err != nil {
+		return fmt.Errorf("migrate active_multiplex data: %w", err)
+	}
+
+	// Swap tables
+	if _, err := db.Exec(`DROP TABLE active_multiplex`); err != nil {
+		return fmt.Errorf("drop old active_multiplex: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE active_multiplex_new RENAME TO active_multiplex`); err != nil {
+		return fmt.Errorf("rename new active_multiplex: %w", err)
+	}
+
+	return nil
+}
+
 // CreateIndexes creates indexes if they do not exist.
 func CreateIndexes(db *sql.DB) error {
 	statements := []string{
@@ -216,7 +278,7 @@ func SeedTargetCLIs(db *sql.DB) error {
 			"~/.config/opencode/config.json",
 			`["OPENCODE_MODEL","OPENCODE_FAST_MODEL"]`,
 			"opencode-provider-json",
-			`{"provider_id":"custom","npm":"@ai-sdk/openai-compatible"}`,
+			`{"provider_id":"custom"}`,
 		},
 		{
 			"codex",

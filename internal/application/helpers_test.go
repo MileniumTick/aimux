@@ -29,6 +29,12 @@ func setupTestDB(t *testing.T) *sql.DB {
 	if err := sqlite.MigrationAddModelMetadataColumn(db); err != nil {
 		t.Fatalf("failed to add metadata column: %v", err)
 	}
+	if err := sqlite.MigrationMultiProvider(db); err != nil {
+		t.Fatalf("failed to migrate multi-provider: %v", err)
+	}
+	if err := sqlite.MigrationRemoveOpenCodeNpm(db); err != nil {
+		t.Fatalf("failed to migrate remove opencode npm: %v", err)
+	}
 	if err := sqlite.CreateIndexes(db); err != nil {
 		t.Fatalf("failed to create indexes: %v", err)
 	}

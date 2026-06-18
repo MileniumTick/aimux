@@ -116,14 +116,22 @@ func TestClaudeSettingsJSON_EmptyMappings(t *testing.T) {
 		t.Fatal("expected 'env' block to exist even with empty mappings")
 	}
 
-		if len(env) != 1 {
-			t.Errorf("expected only ANTHROPIC_AUTH_TOKEN in env, got %d entries", len(env))
+		// 3 entries: ANTHROPIC_AUTH_TOKEN + CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC + CLAUDE_CODE_EFFORT_LEVEL
+		const minExpected = 3
+		if len(env) < minExpected {
+			t.Errorf("expected at least %d env entries (auth + extras), got %d", minExpected, len(env))
 		}
 		if env["ANTHROPIC_AUTH_TOKEN"] != "sk-test-key-12345" {
 			t.Errorf("expected api key in env, got %v", env["ANTHROPIC_AUTH_TOKEN"])
 		}
 		if _, exists := env["ANTHROPIC_BASE_URL"]; exists {
 			t.Error("ANTHROPIC_BASE_URL should not be present when BaseURL is empty")
+		}
+		if env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] != "1" {
+			t.Error("expected CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC default")
+		}
+		if env["CLAUDE_CODE_EFFORT_LEVEL"] != "max" {
+			t.Error("expected CLAUDE_CODE_EFFORT_LEVEL default")
 		}
 }
 
@@ -389,8 +397,9 @@ func TestClaudeSettingsJSON_NoMillionContext(t *testing.T) {
 	json.Unmarshal(content, &root)
 	env := root["env"].(map[string]any)
 
-	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "gpt-4o" {
-		t.Errorf("expected 'gpt-4o' without suffix, got %v", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
+	// gpt-4o has 128K context → gets [128k] suffix now
+	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "gpt-4o[128k]" {
+		t.Errorf("expected 'gpt-4o[128k]', got %v", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
 	}
 }
 

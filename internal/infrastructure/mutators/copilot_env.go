@@ -11,12 +11,14 @@ import (
 )
 
 // CopilotEnvFile mutates Copilot CLI's environment configuration by writing
-// a .env file with provider settings.
+// a .env file with provider settings. Supports model context suffix and
+// optional extra env vars.
 // Registered as: "copilot-env-file"
 type CopilotEnvFile struct{}
 
 // Mutate writes a .env file with provider settings, creating a backup of any
-// existing .env file first.
+// existing .env file first. Appends context window suffix (e.g. "[1m]") to
+// model IDs based on model metadata, matching Copilot's convention.
 func (m *CopilotEnvFile) Mutate(
 	configPath string,
 	modelMappings map[string]string,
@@ -67,10 +69,25 @@ func (m *CopilotEnvFile) Mutate(
 		lines = append(lines, "COPILOT_PROVIDER_API_KEY="+provider.APIKey)
 	}
 
+	// Write model with context window suffix
+	modelMeta, _ := mutatorConfig["_model_metadata"].(map[string]any)
 	for _, val := range modelMappings {
 		if val != "" {
+			if md, ok := modelMeta[val].(map[string]any); ok {
+				suffix := config.LookupContextSuffix(md)
+				if suffix != "" {
+					val = val + suffix
+				}
+			}
 			lines = append(lines, "COPILOT_MODEL="+val)
 			break
+		}
+	}
+
+	// Extra env vars from mutator_config.extra_env
+	if extra, ok := mutatorConfig["extra_env"].(map[string]any); ok {
+		for k, v := range extra {
+			lines = append(lines, fmt.Sprintf("%s=%v", k, v))
 		}
 	}
 

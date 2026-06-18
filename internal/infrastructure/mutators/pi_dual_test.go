@@ -257,11 +257,12 @@ func TestPiDualJSON_MetadataEnrichment(t *testing.T) {
 	}
 
 	entry := models[0].(map[string]any)
-	if entry["context_window"] != float64(1_000_000) {
-		t.Errorf("expected context_window 1000000, got %v", entry["context_window"])
+	// pi uses camelCase keys: contextWindow, maxTokens
+	if entry["contextWindow"] != float64(1_000_000) {
+		t.Errorf("expected contextWindow 1000000, got %v", entry["contextWindow"])
 	}
-	if entry["max_tokens"] != float64(384_000) {
-		t.Errorf("expected max_tokens 384000, got %v", entry["max_tokens"])
+	if entry["maxTokens"] != float64(384_000) {
+		t.Errorf("expected maxTokens 384000, got %v", entry["maxTokens"])
 	}
 	if entry["reasoning"] != true {
 		t.Errorf("expected reasoning true, got %v", entry["reasoning"])

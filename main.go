@@ -22,8 +22,17 @@ import (
 var version = "0.2.0"
 
 func main() {
+	closeLog, err := application.SetupLogFile()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not set up log file: %v\n", err)
+	}
+	if closeLog != nil {
+		defer closeLog()
+	}
+
 	db, cleanup, err := setupDB()
 	if err != nil {
+		log.Printf("database setup failed: %v", err)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -84,6 +93,8 @@ func setupDB() (db *sql.DB, cleanup func(), err error) {
 		sqlite2.MigrationAddApiTypeColumn,
 		sqlite2.MigrationAddModelMetadataColumn,
 		sqlite2.MigrationAddDiscoveryURLColumn,
+		sqlite2.MigrationMultiProvider,
+		sqlite2.MigrationRemoveOpenCodeNpm,
 		sqlite2.CreateIndexes,
 		sqlite2.SeedTargetCLIs,
 	} {
