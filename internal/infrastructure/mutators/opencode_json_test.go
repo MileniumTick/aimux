@@ -20,7 +20,6 @@ func defaultOpenCodeProvider() domain.Provider {
 func defaultOpenCodeConfig() map[string]any {
 	return map[string]any{
 		"provider_id": "bifrost",
-		"npm":         "@ai-sdk/openai-compatible",
 	}
 }
 
@@ -53,9 +52,6 @@ func TestOpenCodeProviderJSON_CreatesProviderEntry(t *testing.T) {
 	providers := root["provider"].(map[string]any)
 	bifrost := providers["bifrost"].(map[string]any)
 
-	if bifrost["npm"] != "@ai-sdk/openai-compatible" {
-		t.Errorf("expected npm '@ai-sdk/openai-compatible', got %v", bifrost["npm"])
-	}
 	if bifrost["name"] != "Bifrost" {
 		t.Errorf("expected name 'Bifrost', got %v", bifrost["name"])
 	}
@@ -131,18 +127,6 @@ func TestOpenCodeProviderJSON_MissingProviderID(t *testing.T) {
 	}
 }
 
-func TestOpenCodeProviderJSON_MissingNPM(t *testing.T) {
-	m := &OpenCodeProviderJSON{}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "opencode.json")
-	os.WriteFile(path, []byte(`{}`), 0644)
-
-	cfg := map[string]any{"provider_id": "bifrost"}
-	_, err := m.Mutate(path, map[string]string{}, defaultOpenCodeProvider(), cfg)
-	if err == nil {
-		t.Fatal("expected error for missing npm")
-	}
-}
 
 func TestOpenCodeProviderJSON_EmptyMappings(t *testing.T) {
 	m := &OpenCodeProviderJSON{}

@@ -51,19 +51,29 @@ func (m *ClaudeSettingsJSON) Mutate(
 		}
 	}
 
-	// Write model mappings (skip empty values)
+	// Write model mappings (skip empty values).
+	// Auto-detect 1M context window from model metadata and append "[1m]"
+	// suffix — Claude Code uses this to enable full context window.
+	modelMeta, _ := mutatorConfig["_model_metadata"].(map[string]any)
 	for key, val := range modelMappings {
 		if val != "" {
+			if md, ok := modelMeta[val].(map[string]any); ok {
+				if cw, ok := md["context_window"].(float64); ok && cw >= 1_000_000 {
+					val = val + "[1m]"
+				}
+			}
 			env[key] = val
 		}
 	}
 
-	// Mutually exclusive: API key vs OAuth token. Both set at once causes 401.
-	if provider.APIKey != "" {
-		env["ANTHROPIC_API_KEY"] = provider.APIKey
-		delete(env, "ANTHROPIC_AUTH_TOKEN")
-	} else if provider.AuthToken != "" {
-		env["ANTHROPIC_AUTH_TOKEN"] = provider.AuthToken
+	// Always use ANTHROPIC_AUTH_TOKEN — ANTHROPIC_API_KEY causes login prompts
+	// in Claude Code instead of using the key directly.
+	token := provider.AuthToken
+	if token == "" {
+		token = provider.APIKey
+	}
+	if token != "" {
+		env["ANTHROPIC_AUTH_TOKEN"] = token
 		delete(env, "ANTHROPIC_API_KEY")
 	}
 

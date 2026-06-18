@@ -126,6 +126,22 @@ func MigrationAddApiTypeColumn(db *sql.DB) error {
 	return nil
 }
 
+// MigrationAddModelMetadataColumn adds the metadata JSON column to provider_models.
+// Idempotent: checks if column exists before altering.
+func MigrationAddModelMetadataColumn(db *sql.DB) error {
+	exists, err := columnExists(db, "provider_models", "metadata")
+	if err != nil {
+		return fmt.Errorf("check metadata column: %w", err)
+	}
+	if exists {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE provider_models ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`); err != nil {
+		return fmt.Errorf("add metadata column migration: %w", err)
+	}
+	return nil
+}
+
 // columnExists checks whether a column exists in a table.
 func columnExists(db *sql.DB, table, column string) (bool, error) {
 	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", table))
@@ -201,10 +217,10 @@ func SeedTargetCLIs(db *sql.DB) error {
 		},
 		{
 			"pi-ai",
-			"~/.config/pi/models.json",
+			"~/.pi/agent/models.json",
 			`["PI_DEFAULT_MODEL","PI_FAST_MODEL"]`,
 			"pi-dual-json",
-			`{"provider_id":"custom","provider_type":"openai-compatible"}`,
+			`{"provider_id":"custom"}`,
 		},
 	}
 

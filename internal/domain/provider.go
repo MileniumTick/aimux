@@ -27,8 +27,14 @@ type ProviderModel struct {
 	ID           int64
 	ProviderID   int64
 	ModelName    string
-	ProviderName string // populated by joins, empty otherwise
+	ProviderName string       // populated by joins, empty otherwise
+	Metadata     ModelMetadata // flexible JSON with model capabilities
 }
+
+// ModelMetadata holds model capabilities as a flexible JSON object.
+// Known keys: context_window, max_tokens, reasoning, thinking_level_map,
+// cost, compat, input_modalities.
+type ModelMetadata map[string]any
 
 // ProviderRepository defines the interface for provider persistence.
 type ProviderRepository interface {
@@ -42,4 +48,5 @@ type ProviderRepository interface {
 	DeleteModelsByProvider(providerID int64) error
 	ListModels(providerID int64) ([]ProviderModel, error)
 	ListAllModels() ([]ProviderModel, error)
+	UpdateModelMetadata(providerID int64, modelName string, metadata ModelMetadata) error
 }

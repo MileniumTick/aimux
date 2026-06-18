@@ -35,11 +35,6 @@ var (
 	activeStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("42"))
 
-	hintStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#555555"}).
-			Italic(true).
-			Padding(0, 1)
-
 	errorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("167"))
 )
@@ -106,7 +101,7 @@ func RenderTable(providers []domain.Provider, activeMultiplexes []domain.ActiveM
 			header, divider, row,
 		))
 		b.WriteString("\n\n")
-		b.WriteString(hintStyle.Render("No CLIs configured — run 'aimux init' first"))
+		b.WriteString(helpStyle.Render("No CLIs configured — run 'aimux init' first"))
 		return b.String()
 	}
 
@@ -158,14 +153,14 @@ func RenderTable(providers []domain.Provider, activeMultiplexes []domain.ActiveM
 
 	b.WriteString(lipgloss.JoinVertical(lipgloss.Left, rows...))
 	b.WriteString("\n\n")
-	b.WriteString(hintStyle.Render("Enter = Select action · ↑/↓ navigate menu · q quit"))
+	b.WriteString(helpStyle.Render("Enter = Select action · ↑/↓ navigate menu · q quit"))
 	return b.String()
 }
 
 // RenderProviderList renders the provider management table.
 func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth int) string {
 	if len(providers) == 0 {
-		return hintStyle.Render("No providers configured. Press 'a' to add one.")
+		return helpStyle.Render("No providers configured. Press 'a' to add one.")
 	}
 
 	// Dynamic columns
@@ -258,7 +253,7 @@ func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth
 
 	b.WriteString(lipgloss.JoinVertical(lipgloss.Left, rows...))
 	b.WriteString("\n\n")
-	b.WriteString(hintStyle.Render("↑/↓ navigate · Enter = Switch · a add · d delete · e edit · r retry · t test · Esc back"))
+	b.WriteString(helpStyle.Render("↑/↓ navigate · Enter = Switch · a add · d delete · e edit · r retry · t test · Esc back"))
 	return b.String()
 }
 

@@ -146,8 +146,8 @@ func TestApply_ExistingSettingsJSON(t *testing.T) {
 	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "claude-sonnet-4" {
 		t.Errorf("expected model in env, got %v", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
 	}
-	if env["ANTHROPIC_API_KEY"] != "test-api-key" {
-		t.Errorf("expected api key in env, got %v", env["ANTHROPIC_API_KEY"])
+	if env["ANTHROPIC_AUTH_TOKEN"] != "test-auth-token" {
+		t.Errorf("expected api key in env, got %v", env["ANTHROPIC_AUTH_TOKEN"])
 	}
 }
 
@@ -184,8 +184,8 @@ func TestApply_NonExistentConfigFile(t *testing.T) {
 	var root map[string]any
 	json.Unmarshal(content, &root)
 	env := root["env"].(map[string]any)
-	if env["ANTHROPIC_API_KEY"] != "test-api-key" {
-		t.Errorf("expected api key, got %v", env["ANTHROPIC_API_KEY"])
+	if env["ANTHROPIC_AUTH_TOKEN"] != "test-auth-token" {
+		t.Errorf("expected api key, got %v", env["ANTHROPIC_AUTH_TOKEN"])
 	}
 }
 
@@ -219,8 +219,8 @@ func TestApply_APIKeySecurityCleanup(t *testing.T) {
 		t.Error("expected 'theme' preserved")
 	}
 	env := root["env"].(map[string]any)
-	if env["ANTHROPIC_API_KEY"] != "test-api-key" {
-		t.Errorf("expected new api key in env, got %v", env["ANTHROPIC_API_KEY"])
+	if env["ANTHROPIC_AUTH_TOKEN"] != "test-auth-token" {
+		t.Errorf("expected new api key in env, got %v", env["ANTHROPIC_AUTH_TOKEN"])
 	}
 }
 
@@ -254,8 +254,8 @@ func TestApply_PartialMappingsEmptyValues(t *testing.T) {
 	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "claude-sonnet-4" {
 		t.Errorf("expected sonnet model in env, got %v", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
 	}
-	if env["ANTHROPIC_API_KEY"] != "test-api-key" {
-		t.Errorf("expected api key in env, got %v", env["ANTHROPIC_API_KEY"])
+	if env["ANTHROPIC_AUTH_TOKEN"] != "test-auth-token" {
+		t.Errorf("expected api key in env, got %v", env["ANTHROPIC_AUTH_TOKEN"])
 	}
 }
 
@@ -315,7 +315,7 @@ func TestApply_FallbackEmptyMutator(t *testing.T) {
 	var root map[string]any
 	json.Unmarshal(content, &root)
 	env := root["env"].(map[string]any)
-	if env["ANTHROPIC_API_KEY"] != "test-api-key" {
-		t.Errorf("expected api key in env, got %v", env["ANTHROPIC_API_KEY"])
+	if env["ANTHROPIC_AUTH_TOKEN"] != "test-auth-token" {
+		t.Errorf("expected api key in env, got %v", env["ANTHROPIC_AUTH_TOKEN"])
 	}
 }

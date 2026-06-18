@@ -76,6 +76,7 @@ func setupDB() (db *sql.DB, cleanup func(), err error) {
 		sqlite2.RunMigrations,
 		sqlite2.MigrationAddMutatorColumns,
 		sqlite2.MigrationAddApiTypeColumn,
+		sqlite2.MigrationAddModelMetadataColumn,
 		sqlite2.CreateIndexes,
 		sqlite2.SeedTargetCLIs,
 	} {

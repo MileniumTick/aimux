@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/MileniumTick/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/infrastructure/config"
 )
 
 const (
@@ -104,7 +105,7 @@ func (uc *ProviderUseCases) fetchOpenAIModels(providerID int64, baseURL, authTok
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", fetchUserAgent)
 
-	modelNames, err := uc.doModelFetch(req)
+	modelNames, body, err := uc.doModelFetch(req)
 	if err != nil {
 		return err
 	}
@@ -112,6 +113,7 @@ func (uc *ProviderUseCases) fetchOpenAIModels(providerID int64, baseURL, authTok
 	if err := uc.providerRepo.InsertModels(providerID, modelNames); err != nil {
 		return fmt.Errorf("store models: %w", err)
 	}
+	uc.saveModelMetadata(providerID, modelNames, body, domain.ApiTypeOpenAI)
 	if err := uc.providerRepo.UpdateStatus(providerID, "active"); err != nil {
 		return fmt.Errorf("update provider status: %w", err)
 	}
@@ -130,7 +132,7 @@ func (uc *ProviderUseCases) fetchAnthropicModels(providerID int64, baseURL, auth
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", fetchUserAgent)
 
-	modelNames, err := uc.doModelFetch(req)
+	modelNames, body, err := uc.doModelFetch(req)
 	if err != nil {
 		return err
 	}
@@ -138,6 +140,7 @@ func (uc *ProviderUseCases) fetchAnthropicModels(providerID int64, baseURL, auth
 	if err := uc.providerRepo.InsertModels(providerID, modelNames); err != nil {
 		return fmt.Errorf("store models: %w", err)
 	}
+	uc.saveModelMetadata(providerID, modelNames, body, domain.ApiTypeAnthropic)
 	if err := uc.providerRepo.UpdateStatus(providerID, "active"); err != nil {
 		return fmt.Errorf("update provider status: %w", err)
 	}
@@ -154,7 +157,7 @@ func (uc *ProviderUseCases) fetchGoogleModels(providerID int64, baseURL, authTok
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", fetchUserAgent)
 
-	modelNames, err := uc.doModelFetch(req)
+	modelNames, body, err := uc.doModelFetch(req)
 	if err != nil {
 		return err
 	}
@@ -162,22 +165,23 @@ func (uc *ProviderUseCases) fetchGoogleModels(providerID int64, baseURL, authTok
 	if err := uc.providerRepo.InsertModels(providerID, modelNames); err != nil {
 		return fmt.Errorf("store models: %w", err)
 	}
+	uc.saveModelMetadata(providerID, modelNames, body, domain.ApiTypeGoogle)
 	if err := uc.providerRepo.UpdateStatus(providerID, "active"); err != nil {
 		return fmt.Errorf("update provider status: %w", err)
 	}
 	return nil
 }
 
-// doModelFetch executes the HTTP request and parses the models response.
-func (uc *ProviderUseCases) doModelFetch(req *http.Request) ([]string, error) {
+// doModelFetch executes the HTTP request and returns model names and raw response body.
+func (uc *ProviderUseCases) doModelFetch(req *http.Request) ([]string, []byte, error) {
 	client := &http.Client{Timeout: fetchTimeout}
 
 	resp, err := client.Do(req)
 	if err != nil {
 		if strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "Timeout") {
-			return nil, fmt.Errorf("request timed out after %d seconds", int(fetchTimeout.Seconds()))
+			return nil, nil, fmt.Errorf("request timed out after %d seconds", int(fetchTimeout.Seconds()))
 		}
-		return nil, fmt.Errorf("network error: %w", err)
+		return nil, nil, fmt.Errorf("network error: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -185,31 +189,105 @@ func (uc *ProviderUseCases) doModelFetch(req *http.Request) ([]string, error) {
 	case http.StatusOK:
 		// continue
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return nil, fmt.Errorf("authentication failed: check auth token")
+		return nil, nil, fmt.Errorf("authentication failed: check auth token")
 	case http.StatusTooManyRequests:
 		retryAfter := resp.Header.Get("Retry-After")
 		if retryAfter != "" {
-			return nil, fmt.Errorf("rate limited by provider, retry after %s seconds", retryAfter)
+			return nil, nil, fmt.Errorf("rate limited by provider, retry after %s seconds", retryAfter)
 		}
-		return nil, fmt.Errorf("rate limited by provider")
+		return nil, nil, fmt.Errorf("rate limited by provider")
 	default:
 		if resp.StatusCode >= 500 {
-			return nil, fmt.Errorf("provider returned server error: %d", resp.StatusCode)
+			return nil, nil, fmt.Errorf("provider returned server error: %d", resp.StatusCode)
 		}
-		return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
+		return nil, nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read response body: %w", err)
+		return nil, nil, fmt.Errorf("read response body: %w", err)
 	}
 
 	modelNames, err := parseModelsResponse(body)
 	if err != nil {
-		return nil, fmt.Errorf("invalid response format: %w", err)
+		return nil, nil, fmt.Errorf("invalid response format: %w", err)
 	}
 
-	return modelNames, nil
+	return modelNames, body, nil
+}
+
+// saveModelMetadata parses metadata from the API response body, enriches with the
+// known model catalog, and stores it per model.
+func (uc *ProviderUseCases) saveModelMetadata(providerID int64, modelNames []string, body []byte, apiType domain.ApiType) {
+	for _, name := range modelNames {
+		md := uc.parseModelCapabilities(name, body, apiType)
+		if len(md) == 0 {
+			continue // nothing to save
+		}
+		_ = uc.providerRepo.UpdateModelMetadata(providerID, name, md)
+	}
+}
+
+// parseModelCapabilities extracts metadata for a specific model from the raw
+// API response, then enriches with the known catalog.
+func (uc *ProviderUseCases) parseModelCapabilities(modelName string, body []byte, apiType domain.ApiType) domain.ModelMetadata {
+	md := config.LookupModelMetadata(modelName) // catalog first as base
+
+	// Merge API-provided metadata on top
+	switch apiType {
+	case domain.ApiTypeGoogle:
+		md = mergeMetadata(md, parseGoogleModelMetadata(modelName, body))
+		// Anthropic and OpenAI APIs don't return per-model capabilities beyond the ID
+	}
+
+	return md
+}
+
+// googleModelsList represents a Gemini /v1beta/models response.
+type googleModelsList struct {
+	Models []googleModelEntry `json:"models"`
+}
+
+type googleModelEntry struct {
+	Name             string `json:"name"`
+	DisplayName      string `json:"displayName"`
+	InputTokenLimit  int64  `json:"inputTokenLimit"`
+	OutputTokenLimit int64  `json:"outputTokenLimit"`
+}
+
+// parseGoogleModelMetadata extracts capabilities from a Google API response.
+func parseGoogleModelMetadata(modelName string, body []byte) domain.ModelMetadata {
+	var list googleModelsList
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil
+	}
+	for _, m := range list.Models {
+		// Google returns model names like "models/gemini-2.5-pro" — strip prefix.
+		id := strings.TrimPrefix(m.Name, "models/")
+		if id == modelName || strings.EqualFold(id, modelName) {
+			md := domain.ModelMetadata{}
+			if m.InputTokenLimit > 0 {
+				md["context_window"] = m.InputTokenLimit
+			}
+			if m.OutputTokenLimit > 0 {
+				md["max_tokens"] = m.OutputTokenLimit
+			}
+			return md
+		}
+	}
+	return nil
+}
+
+// mergeMetadata merges apiMeta on top of base, returning a new map.
+func mergeMetadata(base, apiMeta domain.ModelMetadata) domain.ModelMetadata {
+	result := make(domain.ModelMetadata, len(base)+len(apiMeta))
+	for k, v := range base {
+		result[k] = v
+	}
+	for k, v := range apiMeta {
+		result[k] = v
+	}
+	return result
 }
 
 // resolveBaseURL normalizes a base URL.

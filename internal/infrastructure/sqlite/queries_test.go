@@ -29,6 +29,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 	if err := MigrationAddMutatorColumns(db); err != nil {
 		t.Fatalf("failed to add mutator columns: %v", err)
 	}
+	if err := MigrationAddModelMetadataColumn(db); err != nil {
+		t.Fatalf("failed to add metadata column: %v", err)
+	}
 	if err := CreateIndexes(db); err != nil {
 		t.Fatalf("failed to create indexes: %v", err)
 	}

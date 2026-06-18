@@ -85,6 +85,20 @@ func (uc *SwitchUseCases) Apply(targetCLIID, providerID int64) (*domain.BackupRe
 		return nil, fmt.Errorf("mutator '%s' not registered for CLI '%s'", mutatorName, cli.Name)
 	}
 
+	// Inject model metadata for mutators that need it (pi, claude [1m] suffix, etc.)
+	models, _ := uc.providerRepo.ListModels(providerID)
+	if len(models) > 0 {
+		modelMeta := make(map[string]any)
+		for _, m := range models {
+			if len(m.Metadata) > 0 {
+				modelMeta[m.ModelName] = m.Metadata
+			}
+		}
+		if len(modelMeta) > 0 {
+			mutatorCfg["_model_metadata"] = modelMeta
+		}
+	}
+
 	return mutator.Mutate(resolvedPath, mappings, provider, mutatorCfg)
 }
 

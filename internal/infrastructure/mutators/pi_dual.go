@@ -9,13 +9,13 @@ import (
 	"github.com/MileniumTick/aimux/internal/infrastructure/config"
 )
 
-// PiDualJSON mutates Pi's dual JSON config files: models.json (provider definitions
-// and models) and auth.json (credentials).
+// PiDualJSON mutates Pi's single models.json config file.
+// Pi keeps providers, credentials, and models together in one file.
 // Registered as: "pi-dual-json"
 type PiDualJSON struct{}
 
-// Mutate reads and writes both models.json and auth.json, creating backups for
-// each file before mutation.
+// Mutate reads models.json and writes/updates a provider entry with the
+// correct schema: baseUrl, apiKey, api, and models as an array of {id, name}.
 func (m *PiDualJSON) Mutate(
 	configPath string,
 	modelMappings map[string]string,
@@ -27,12 +27,13 @@ func (m *PiDualJSON) Mutate(
 		return nil, fmt.Errorf("pi mutator requires provider_id in mutator_config")
 	}
 
-	providerType, ok := mutatorConfig["provider_type"].(string)
-	if !ok || providerType == "" {
-		return nil, fmt.Errorf("pi mutator requires provider_type in mutator_config")
+	// Derive pi api value from provider.ApiType. mutator_config "api" overrides.
+	apiVal := piAPIFromProvider(provider)
+	if cfgAPI, ok := mutatorConfig["api"].(string); ok && cfgAPI != "" {
+		apiVal = cfgAPI
 	}
 
-	// Resolve file paths
+	// Resolve models.json path
 	piDir := configPath
 	if filepath.Ext(configPath) != "" {
 		piDir = filepath.Dir(configPath)
@@ -43,84 +44,91 @@ func (m *PiDualJSON) Mutate(
 		modelsPath = mp
 	}
 
-	authPath := filepath.Join(piDir, "auth.json")
-	if ap, ok := mutatorConfig["auth_path"].(string); ok && ap != "" {
-		authPath = ap
-	}
-
-	// Ensure directory exists
 	if err := config.PrepareDir(modelsPath); err != nil {
 		return nil, err
 	}
-	if err := config.PrepareDir(authPath); err != nil {
-		return nil, err
-	}
 
-	// --- models.json ---
-	var modelsBackupResult *domain.BackupResult
+	// Backup
+	var backupResult *domain.BackupResult
 	if fi, err := os.Stat(modelsPath); err == nil && fi.Mode().IsRegular() {
 		bp, err := config.CreateBackup(modelsPath)
 		if err != nil {
 			return nil, err
 		}
-		modelsBackupResult = &domain.BackupResult{BackupPath: bp}
+		backupResult = &domain.BackupResult{BackupPath: bp}
 	}
 
-	modelsRoot, err := config.ReadJSONWithLock(modelsPath)
+	root, err := config.ReadJSONWithLock(modelsPath)
 	if err != nil {
 		return nil, err
 	}
 
 	// Ensure providers key exists
-	providers, ok := modelsRoot["providers"].(map[string]any)
+	providers, ok := root["providers"].(map[string]any)
 	if !ok {
 		providers = make(map[string]any)
-		modelsRoot["providers"] = providers
+		root["providers"] = providers
 	}
 
-	// Build provider entry with models
-	providerModels := make(map[string]any)
-	for _, val := range modelMappings {
-		if val != "" {
-			providerModels[val] = map[string]any{"name": val}
+	// Build models array with metadata from catalog/API.
+	modelMeta, _ := mutatorConfig["_model_metadata"].(map[string]any)
+	modelsArr := make([]any, 0)
+	for _, modelName := range modelMappings {
+		if modelName == "" {
+			continue
 		}
+		entry := map[string]any{
+			"id":   modelName,
+			"name": modelName,
+		}
+		// Enrich from catalog/API metadata if available
+		if modelMeta != nil {
+			if md, ok := modelMeta[modelName].(map[string]any); ok {
+				if cw, ok := md["context_window"]; ok {
+					entry["context_window"] = cw
+				}
+				if mt, ok := md["max_tokens"]; ok {
+					entry["max_tokens"] = mt
+				}
+				if r, ok := md["reasoning"]; ok {
+					entry["reasoning"] = r
+				}
+				if im, ok := md["input_modalities"]; ok {
+					entry["input"] = im
+				}
+			}
+		}
+		modelsArr = append(modelsArr, entry)
 	}
 
 	providerEntry := map[string]any{
-		"type":    providerType,
-		"base_url": provider.BaseURL,
-		"models":   providerModels,
+		"baseUrl": provider.BaseURL,
+		"apiKey":  provider.APIKey,
+		"api":     apiVal,
+		"models":  modelsArr,
 	}
 
 	providers[providerID] = providerEntry
 
-	if err := config.WriteAtomicJSON(modelsPath, modelsRoot); err != nil {
+	if err := config.WriteAtomicJSON(modelsPath, root); err != nil {
 		return nil, err
 	}
 	config.PruneBackups(modelsPath, 5)
 
-	// --- auth.json ---
-	if fi, err := os.Stat(authPath); err == nil && fi.Mode().IsRegular() {
-		if _, err := config.CreateBackup(authPath); err != nil {
-			return nil, err
-		}
-	}
+	return backupResult, nil
+}
 
-	authRoot, err := config.ReadJSONWithLock(authPath)
-	if err != nil {
-		return nil, err
+// piAPIFromProvider maps domain.ApiType to pi's api field value.
+// ponytail: simple mapping, safe "openai-completions" fallback for unknown types.
+func piAPIFromProvider(p domain.Provider) string {
+	switch p.ApiType {
+	case domain.ApiTypeAnthropic:
+		return "anthropic-messages"
+	case domain.ApiTypeGoogle:
+		return "google-generative-ai"
+	case domain.ApiTypeOpenAI:
+		return "openai-completions"
+	default:
+		return "openai-completions"
 	}
-
-	// Set credentials for this provider (preserves other providers)
-	authRoot[providerID] = map[string]any{
-		"type": "api_key",
-		"key":  provider.APIKey,
-	}
-
-	if err := config.WriteAtomicJSON(authPath, authRoot); err != nil {
-		return nil, err
-	}
-	config.PruneBackups(authPath, 5)
-
-	return modelsBackupResult, nil
 }

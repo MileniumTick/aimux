@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -142,7 +143,7 @@ func (r *ProviderRepository) DeleteModelsByProvider(providerID int64) error {
 // ListModels returns all models for a given provider ordered by model_name ASC.
 func (r *ProviderRepository) ListModels(providerID int64) ([]domain.ProviderModel, error) {
 	rows, err := r.DB.Query(
-		`SELECT id, provider_id, model_name FROM provider_models WHERE provider_id = ? ORDER BY model_name ASC`,
+		`SELECT id, provider_id, model_name, COALESCE(metadata, '{}') FROM provider_models WHERE provider_id = ? ORDER BY model_name ASC`,
 		providerID,
 	)
 	if err != nil {
@@ -153,9 +154,11 @@ func (r *ProviderRepository) ListModels(providerID int64) ([]domain.ProviderMode
 	var models []domain.ProviderModel
 	for rows.Next() {
 		var m domain.ProviderModel
-		if err := rows.Scan(&m.ID, &m.ProviderID, &m.ModelName); err != nil {
+		var metaStr string
+		if err := rows.Scan(&m.ID, &m.ProviderID, &m.ModelName, &metaStr); err != nil {
 			return nil, fmt.Errorf("scan model: %w", err)
 		}
+		m.Metadata = parseModelMetadata(metaStr)
 		models = append(models, m)
 	}
 	return models, rows.Err()
@@ -164,7 +167,7 @@ func (r *ProviderRepository) ListModels(providerID int64) ([]domain.ProviderMode
 // ListAllModels returns all models across all providers with provider name joined.
 func (r *ProviderRepository) ListAllModels() ([]domain.ProviderModel, error) {
 	rows, err := r.DB.Query(
-		`SELECT pm.id, pm.provider_id, pm.model_name, p.name AS provider_name
+		`SELECT pm.id, pm.provider_id, pm.model_name, p.name AS provider_name, COALESCE(pm.metadata, '{}')
 		 FROM provider_models pm
 		 JOIN providers p ON pm.provider_id = p.id
 		 ORDER BY pm.model_name ASC`,
@@ -177,10 +180,39 @@ func (r *ProviderRepository) ListAllModels() ([]domain.ProviderModel, error) {
 	var models []domain.ProviderModel
 	for rows.Next() {
 		var m domain.ProviderModel
-		if err := rows.Scan(&m.ID, &m.ProviderID, &m.ModelName, &m.ProviderName); err != nil {
+		var metaStr string
+		if err := rows.Scan(&m.ID, &m.ProviderID, &m.ModelName, &m.ProviderName, &metaStr); err != nil {
 			return nil, fmt.Errorf("scan model: %w", err)
 		}
+		m.Metadata = parseModelMetadata(metaStr)
 		models = append(models, m)
 	}
 	return models, rows.Err()
+}
+
+// UpdateModelMetadata sets metadata for a specific model.
+func (r *ProviderRepository) UpdateModelMetadata(providerID int64, modelName string, metadata domain.ModelMetadata) error {
+	data, err := json.Marshal(metadata)
+	if err != nil {
+		return fmt.Errorf("marshal metadata: %w", err)
+	}
+	_, err = r.DB.Exec(
+		`UPDATE provider_models SET metadata = ? WHERE provider_id = ? AND model_name = ?`,
+		string(data), providerID, modelName,
+	)
+	if err != nil {
+		return fmt.Errorf("update model metadata: %w", err)
+	}
+	return nil
+}
+
+func parseModelMetadata(raw string) domain.ModelMetadata {
+	if raw == "" || raw == "{}" {
+		return domain.ModelMetadata{}
+	}
+	var m domain.ModelMetadata
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return domain.ModelMetadata{}
+	}
+	return m
 }

@@ -26,11 +26,6 @@ func (m *OpenCodeProviderJSON) Mutate(
 		return nil, fmt.Errorf("opencode mutator requires provider_id in mutator_config")
 	}
 
-	npm, _ := mutatorConfig["npm"].(string)
-	if npm == "" {
-		return nil, fmt.Errorf("opencode mutator requires npm in mutator_config")
-	}
-
 	if err := config.PrepareDir(configPath); err != nil {
 		return nil, err
 	}
@@ -59,7 +54,6 @@ func (m *OpenCodeProviderJSON) Mutate(
 
 	// Build provider entry
 	providerEntry := map[string]any{
-		"npm":  npm,
 		"name": provider.Name,
 		"options": map[string]any{
 			"baseURL": provider.BaseURL,

@@ -154,6 +154,22 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.form != nil {
+		// Intercept Esc for single-select forms before huh processes it.
+		// huh treats Esc as "previous field" and silently swallows it
+		// when no previous field exists (single-group forms).
+		switch k := msg.(type) {
+		case tea.KeyMsg:
+			if key.Matches(k, menuKeys.Esc) && m.isSingleSelectForm() {
+				m.form = nil
+				prev := m.previousView()
+				m.currentView = prev
+				if prev == switchTargetCLIView || prev == switchProviderView {
+					return m, m.enterSwitchView(prev)
+				}
+				return m, nil
+			}
+		}
+
 		form, cmd := m.form.Update(msg)
 		f, ok := form.(*huh.Form)
 		if !ok {
@@ -627,6 +643,13 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 }
 
 var (
+	titleStyle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("255")).
+		Padding(0, 2)
+
+	viewPadding = lipgloss.NewStyle().PaddingTop(2)
+
 	notifOKStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("236")).
 			Foreground(lipgloss.Color("42")).
@@ -650,16 +673,13 @@ func (m *model) View() string {
 	case dashboardView:
 		table := RenderTable(m.providers, m.activeMultiplexes, m.targetCLIs, m.width)
 		menu := RenderMenu(m.menuSelected, len(m.providers) > 0)
-		content = lipgloss.JoinVertical(lipgloss.Center, table, menu)
-		if m.height > 0 {
-			content = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
-		}
+		title := titleStyle.Render("aimux")
+		content = lipgloss.JoinVertical(lipgloss.Left, title, table, menu)
+		content = viewPadding.Render(content)
 
 	case providerListView:
 		content = RenderProviderList(m.providers, m.selectedProviderID, m.width)
-		if m.height > 0 {
-			content = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
-		}
+		content = viewPadding.Render(content)
 
 	case switchConfirmationView:
 		if m.switchDryRun != nil {
@@ -685,9 +705,7 @@ func (m *model) View() string {
 				helpStyle.Render("Press Enter or Esc to return to dashboard"),
 			)
 		}
-		if m.height > 0 {
-			content = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
-		}
+		content = viewPadding.Render(content)
 
 	default:
 		content = "Loading..."
@@ -698,7 +716,7 @@ func (m *model) View() string {
 		if m.notificationIsMsg {
 			style = notifOKStyle
 		}
-		bar := style.Width(m.width - 4).Render("  " + m.notification)
+		bar := style.Width(m.width).Render("  " + m.notification)
 		content = lipgloss.JoinVertical(lipgloss.Center, content, "\n", bar)
 	}
 
@@ -796,6 +814,12 @@ func (m *model) prevProviderID(current int64) int64 {
 		return m.providers[len(m.providers)-1].ID
 	}
 	return 0
+}
+
+func (m *model) isSingleSelectForm() bool {
+	return m.currentView == switchTargetCLIView ||
+		m.currentView == switchProviderView ||
+		m.currentView == manageCLIView
 }
 
 func trimSpaces(s string) string {

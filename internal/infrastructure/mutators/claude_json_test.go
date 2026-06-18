@@ -81,12 +81,12 @@ func TestClaudeSettingsJSON_ExistingSettings(t *testing.T) {
 		t.Error("empty model mapping should be excluded from env block")
 	}
 
-	if env["ANTHROPIC_API_KEY"] != "sk-test-key-12345" {
-		t.Errorf("expected 'sk-test-key-12345' in env, got %v", env["ANTHROPIC_API_KEY"])
+	if env["ANTHROPIC_AUTH_TOKEN"] != "sk-test-key-12345" {
+		t.Errorf("expected 'sk-test-key-12345' in env, got %v", env["ANTHROPIC_AUTH_TOKEN"])
 	}
 
-	if _, exists := root["ANTHROPIC_API_KEY"]; exists {
-		t.Error("root ANTHROPIC_API_KEY should have been removed")
+	if _, exists := root["ANTHROPIC_AUTH_TOKEN"]; exists {
+		t.Error("root ANTHROPIC_AUTH_TOKEN should have been removed")
 	}
 }
 
@@ -117,10 +117,10 @@ func TestClaudeSettingsJSON_EmptyMappings(t *testing.T) {
 	}
 
 		if len(env) != 1 {
-			t.Errorf("expected only ANTHROPIC_API_KEY in env, got %d entries", len(env))
+			t.Errorf("expected only ANTHROPIC_AUTH_TOKEN in env, got %d entries", len(env))
 		}
-		if env["ANTHROPIC_API_KEY"] != "sk-test-key-12345" {
-			t.Errorf("expected api key in env, got %v", env["ANTHROPIC_API_KEY"])
+		if env["ANTHROPIC_AUTH_TOKEN"] != "sk-test-key-12345" {
+			t.Errorf("expected api key in env, got %v", env["ANTHROPIC_AUTH_TOKEN"])
 		}
 		if _, exists := env["ANTHROPIC_BASE_URL"]; exists {
 			t.Error("ANTHROPIC_BASE_URL should not be present when BaseURL is empty")
@@ -160,8 +160,8 @@ func TestClaudeSettingsJSON_APIKeyCleanup(t *testing.T) {
 	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "new-model" {
 		t.Errorf("expected new model in env, got %v", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
 	}
-	if env["ANTHROPIC_API_KEY"] != "sk-test-key-12345" {
-		t.Errorf("expected new api key in env, got %v", env["ANTHROPIC_API_KEY"])
+	if env["ANTHROPIC_AUTH_TOKEN"] != "sk-test-key-12345" {
+		t.Errorf("expected new api key in env, got %v", env["ANTHROPIC_AUTH_TOKEN"])
 	}
 }
 
@@ -261,8 +261,9 @@ func TestClaudeSettingsJSON_BackupPruning(t *testing.T) {
 }
 
 func TestClaudeSettingsJSON_AuthTokenExclusion(t *testing.T) {
-	// When API key is set, existing ANTHROPIC_AUTH_TOKEN must be removed to
-	// prevent the "both tokens set" 401 error from the Anthropic API.
+	// When API key is set (and AuthToken is empty), the API key should be written
+	// as ANTHROPIC_AUTH_TOKEN, overwriting any existing value.
+	// ANTHROPIC_API_KEY is never written because it causes login prompts in Claude Code.
 	m := &ClaudeSettingsJSON{}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
@@ -283,14 +284,14 @@ func TestClaudeSettingsJSON_AuthTokenExclusion(t *testing.T) {
 	json.Unmarshal(content, &root)
 	env := root["env"].(map[string]any)
 
-	if _, exists := env["ANTHROPIC_AUTH_TOKEN"]; exists {
-		t.Error("ANTHROPIC_AUTH_TOKEN must be removed when ANTHROPIC_API_KEY is set")
+	if env["ANTHROPIC_AUTH_TOKEN"] != "sk-test-key-12345" {
+		t.Errorf("expected ANTHROPIC_AUTH_TOKEN with api key value, got %v", env["ANTHROPIC_AUTH_TOKEN"])
 	}
 	if env["SOME_OTHER_VAR"] != "keep-me" {
 		t.Error("existing env vars must be preserved")
 	}
-	if env["ANTHROPIC_API_KEY"] != "sk-test-key-12345" {
-		t.Errorf("expected api key in env, got %v", env["ANTHROPIC_API_KEY"])
+	if _, exists := env["ANTHROPIC_API_KEY"]; exists {
+		t.Error("ANTHROPIC_API_KEY must never be written (causes Claude Code login prompts)")
 	}
 }
 
@@ -317,7 +318,105 @@ func TestClaudeSettingsJSON_NewFile(t *testing.T) {
 	var root map[string]any
 	json.Unmarshal(content, &root)
 	env := root["env"].(map[string]any)
-	if env["ANTHROPIC_API_KEY"] != "sk-test-key-12345" {
-		t.Errorf("expected api key, got %v", env["ANTHROPIC_API_KEY"])
+	if env["ANTHROPIC_AUTH_TOKEN"] != "sk-test-key-12345" {
+		t.Errorf("expected api key, got %v", env["ANTHROPIC_AUTH_TOKEN"])
+	}
+}
+
+func TestClaudeSettingsJSON_OneMillionContext(t *testing.T) {
+	// Models with context_window >= 1M auto-get "[1m]" suffix from metadata.
+	m := &ClaudeSettingsJSON{}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	cfg := map[string]any{
+		"_model_metadata": map[string]any{
+			"deepseek-v4-pro":   map[string]any{"context_window": float64(1_000_000)},
+			"deepseek-v4-flash": map[string]any{"context_window": float64(1_000_000)},
+		},
+	}
+	mappings := map[string]string{
+		"ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro",
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  "deepseek-v4-flash",
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":   "",
+	}
+
+	provider := defaultClaudeProvider()
+	provider.BaseURL = ""
+	if _, err := m.Mutate(path, mappings, provider, cfg); err != nil {
+		t.Fatalf("Mutate failed: %v", err)
+	}
+
+	content, _ := os.ReadFile(path)
+	var root map[string]any
+	json.Unmarshal(content, &root)
+	env := root["env"].(map[string]any)
+
+	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "deepseek-v4-pro[1m]" {
+		t.Errorf("expected 'deepseek-v4-pro[1m]', got %v", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
+	}
+	if env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] != "deepseek-v4-flash[1m]" {
+		t.Errorf("expected 'deepseek-v4-flash[1m]', got %v", env["ANTHROPIC_DEFAULT_HAIKU_MODEL"])
+	}
+	if _, exists := env["ANTHROPIC_DEFAULT_OPUS_MODEL"]; exists {
+		t.Error("empty mapping should not appear even with 1M context")
+	}
+}
+
+func TestClaudeSettingsJSON_NoMillionContext(t *testing.T) {
+	// Models with context_window < 1M get no suffix.
+	m := &ClaudeSettingsJSON{}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	cfg := map[string]any{
+		"_model_metadata": map[string]any{
+			"gpt-4o": map[string]any{"context_window": float64(128_000)},
+		},
+	}
+	mappings := map[string]string{
+		"ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-4o",
+	}
+
+	provider := defaultClaudeProvider()
+	provider.BaseURL = ""
+	if _, err := m.Mutate(path, mappings, provider, cfg); err != nil {
+		t.Fatalf("Mutate failed: %v", err)
+	}
+
+	content, _ := os.ReadFile(path)
+	var root map[string]any
+	json.Unmarshal(content, &root)
+	env := root["env"].(map[string]any)
+
+	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "gpt-4o" {
+		t.Errorf("expected 'gpt-4o' without suffix, got %v", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
+	}
+}
+
+func TestClaudeSettingsJSON_NoMetadataFallback(t *testing.T) {
+	// Without _model_metadata, no suffix is applied (graceful degradation).
+	m := &ClaudeSettingsJSON{}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	cfg := map[string]any{} // no metadata
+	mappings := map[string]string{
+		"ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro",
+	}
+
+	provider := defaultClaudeProvider()
+	provider.BaseURL = ""
+	if _, err := m.Mutate(path, mappings, provider, cfg); err != nil {
+		t.Fatalf("Mutate failed: %v", err)
+	}
+
+	content, _ := os.ReadFile(path)
+	var root map[string]any
+	json.Unmarshal(content, &root)
+	env := root["env"].(map[string]any)
+
+	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "deepseek-v4-pro" {
+		t.Errorf("expected 'deepseek-v4-pro' without suffix (no metadata), got %v", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
 	}
 }
