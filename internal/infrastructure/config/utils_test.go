@@ -2,11 +2,23 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// withTempBackupRoot redirects the centralized backup store to a temp dir for
+// the duration of a test so it never touches the real ~/.config/aimux/backups.
+func withTempBackupRoot(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "backups")
+	orig := backupRootFn
+	backupRootFn = func() (string, error) { return root, nil }
+	t.Cleanup(func() { backupRootFn = orig })
+	return root
+}
 
 func TestReadJSONWithLock_ExistingFile(t *testing.T) {
 	dir := t.TempDir()
@@ -144,8 +156,9 @@ func TestWriteAtomicJSON_ValidData(t *testing.T) {
 }
 
 func TestCreateBackup_ExistingFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "settings.json")
+	withTempBackupRoot(t)
+	srcDir := t.TempDir()
+	path := filepath.Join(srcDir, "settings.json")
 
 	original := `{"data": "original"}`
 	os.WriteFile(path, []byte(original), 0644)
@@ -164,14 +177,15 @@ func TestCreateBackup_ExistingFile(t *testing.T) {
 		t.Errorf("backup should match original, got %q", string(backupContent))
 	}
 
-	if !strings.HasPrefix(filepath.Base(backupPath), "settings.json.aimux-backup-") {
-		t.Errorf("unexpected backup filename: %s", filepath.Base(backupPath))
+	// Backup must live in the centralized store, NOT next to the source file.
+	if filepath.Dir(backupPath) == srcDir {
+		t.Errorf("backup should be centralized, not next to source: %s", backupPath)
 	}
 }
 
 func TestCreateBackup_NonExistentFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nonexistent.json")
+	withTempBackupRoot(t)
+	path := filepath.Join(t.TempDir(), "nonexistent.json")
 
 	_, err := CreateBackup(path)
 	if err == nil {
@@ -179,56 +193,78 @@ func TestCreateBackup_NonExistentFile(t *testing.T) {
 	}
 }
 
+func TestRestoreBackup_RoundTrip(t *testing.T) {
+	withTempBackupRoot(t)
+	srcDir := t.TempDir()
+	path := filepath.Join(srcDir, "settings.json")
+
+	original := `{"data": "original"}`
+	os.WriteFile(path, []byte(original), 0644)
+
+	bp, err := CreateBackup(path)
+	if err != nil {
+		t.Fatalf("CreateBackup failed: %v", err)
+	}
+
+	// Mutate the source, then restore from backup.
+	os.WriteFile(path, []byte(`{"data": "mutated"}`), 0644)
+	if err := RestoreBackup(bp, path); err != nil {
+		t.Fatalf("RestoreBackup failed: %v", err)
+	}
+
+	got, _ := os.ReadFile(path)
+	if string(got) != original {
+		t.Errorf("expected restored content %q, got %q", original, string(got))
+	}
+}
+
 func TestPruneBackups_RemovesExcess(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.json")
-	os.WriteFile(path, []byte(`{}`), 0644)
+	withTempBackupRoot(t)
+	src := filepath.Join(t.TempDir(), "config.json")
+	os.WriteFile(src, []byte(`{}`), 0644)
 
-	// Create 7 backup files (older names sort first, so we create them in reverse)
+	dir, err := backupDirFor(src)
+	if err != nil {
+		t.Fatalf("backupDirFor failed: %v", err)
+	}
+	os.MkdirAll(dir, 0700)
+
+	base := filepath.Base(src)
 	for i := 0; i < 7; i++ {
-		// Create with slightly different timestamps
-		backupName := "config.json.aimux-backup-2024-01-0" + string(rune('1'+i)) + "T00:00:00Z"
-		os.WriteFile(filepath.Join(dir, backupName), []byte(`{}`), 0644)
+		ts := fmt.Sprintf("2024-01-0%dT00-00-00Z", i+1)
+		os.WriteFile(filepath.Join(dir, base+"."+ts), []byte(`{}`), 0644)
 	}
 
-	PruneBackups(path, 5)
+	PruneBackups(src, 5)
 
-	entries, _ := os.ReadDir(dir)
-	backupCount := 0
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "config.json.aimux-backup-") {
-			backupCount++
-		}
-	}
-
-	if backupCount > 5 {
-		t.Errorf("expected at most 5 backups, got %d", backupCount)
+	backups, _ := ListBackups(src)
+	if len(backups) > 5 {
+		t.Errorf("expected at most 5 backups, got %d", len(backups))
 	}
 }
 
 func TestPruneBackups_UnderLimit(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "app.json")
-	os.WriteFile(path, []byte(`{}`), 0644)
+	withTempBackupRoot(t)
+	src := filepath.Join(t.TempDir(), "app.json")
+	os.WriteFile(src, []byte(`{}`), 0644)
 
-	// Create 2 backup files
+	dir, err := backupDirFor(src)
+	if err != nil {
+		t.Fatalf("backupDirFor failed: %v", err)
+	}
+	os.MkdirAll(dir, 0700)
+
+	base := filepath.Base(src)
 	for i := 0; i < 2; i++ {
-		backupName := "app.json.aimux-backup-2024-01-0" + string(rune('1'+i)) + "T00:00:00Z"
-		os.WriteFile(filepath.Join(dir, backupName), []byte(`{}`), 0644)
+		ts := fmt.Sprintf("2024-01-0%dT00-00-00Z", i+1)
+		os.WriteFile(filepath.Join(dir, base+"."+ts), []byte(`{}`), 0644)
 	}
 
-	PruneBackups(path, 5)
+	PruneBackups(src, 5)
 
-	entries, _ := os.ReadDir(dir)
-	backupCount := 0
-	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "app.json.aimux-backup-") {
-			backupCount++
-		}
-	}
-
-	if backupCount != 2 {
-		t.Errorf("expected 2 backups (under limit), got %d", backupCount)
+	backups, _ := ListBackups(src)
+	if len(backups) != 2 {
+		t.Errorf("expected 2 backups (under limit), got %d", len(backups))
 	}
 }
 

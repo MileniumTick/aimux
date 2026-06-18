@@ -4,16 +4,22 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
-	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/MileniumTick/aimux/internal/application"
 	"github.com/MileniumTick/aimux/internal/domain"
 	"github.com/MileniumTick/aimux/internal/infrastructure/mutators"
 	sqlite2 "github.com/MileniumTick/aimux/internal/infrastructure/sqlite"
+	"github.com/MileniumTick/aimux/internal/infrastructure/update"
 	"github.com/MileniumTick/aimux/internal/tui"
 )
+
+// version is the aimux binary version. Override at build time with
+// -ldflags "-X main.version=x.y.z". Defaults to a dev marker.
+var version = "0.1.0-dev"
 
 func main() {
 	db, cleanup, err := setupDB()
@@ -39,7 +45,7 @@ func main() {
 	providerUseCases := application.NewProviderUseCases(providerRepo, multiplexRepo)
 
 	if len(os.Args) > 1 {
-		runCLI(os.Args[1:], switchUseCases, providerUseCases)
+		runCLI(os.Args[1:], switchUseCases, db)
 		return
 	}
 
@@ -97,7 +103,7 @@ func runTUI(providerUseCases *application.ProviderUseCases, switchUseCases *appl
 	}
 }
 
-func runCLI(args []string, switchUseCases *application.SwitchUseCases, providerUseCases *application.ProviderUseCases) {
+func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.DB) {
 	if len(args) < 1 {
 		printHelp()
 		return
@@ -110,7 +116,7 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, providerU
 			os.Exit(1)
 		}
 		cliName := args[1]
-		cli, err := findCLIByName(cliName, switchUseCases)
+		cli, err := switchUseCases.FindCLIByName(cliName)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
@@ -155,6 +161,58 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, providerU
 			fmt.Printf("  %-15s → %-15s  (%s)\n", am.CLIName, am.ProviderName, am.ActivatedAt)
 		}
 
+	case "backups":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: aimux backups <cli-name>")
+			os.Exit(1)
+		}
+		backups, err := switchUseCases.ListBackups(args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if len(backups) == 0 {
+			fmt.Printf("No backups for '%s'.\n", args[1])
+			return
+		}
+		fmt.Printf("Backups for '%s' (newest first):\n", args[1])
+		for i, b := range backups {
+			fmt.Printf("  [%d] %s\n", i, b.When)
+		}
+
+	case "restore":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: aimux restore <cli-name>")
+			os.Exit(1)
+		}
+		bp, err := switchUseCases.RestoreLatest(args[1])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Restored latest backup: %s\n", bp)
+
+	case "version":
+		fmt.Printf("aimux %s\n", version)
+		info := update.CheckForUpdate(version, db, &http.Client{Timeout: 5 * time.Second})
+		if info.HasUpdate {
+			fmt.Printf("Update available: v%s → v%s\n", version, info.LatestVersion)
+		}
+
+	case "update":
+		execPath, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: cannot resolve executable path: %v\n", err)
+			os.Exit(1)
+		}
+		if update.IsHomebrewInstall(execPath) {
+			os.Exit(update.HomebrewUpdate())
+		}
+		if err := update.SelfUpdate(version, execPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", args[0])
 		printHelp()
@@ -162,30 +220,21 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, providerU
 	}
 }
 
-func findCLIByName(name string, uc *application.SwitchUseCases) (*domain.TargetCLI, error) {
-	clis, err := uc.ListTargetCLIs()
-	if err != nil {
-		return nil, fmt.Errorf("list CLIs: %w", err)
-	}
-	for _, c := range clis {
-		if strings.EqualFold(c.Name, name) {
-			return &c, nil
-		}
-	}
-	return nil, fmt.Errorf("CLI '%s' not found", name)
-}
-
 func printHelp() {
 	fmt.Print(`aimux — AI provider multiplexer for dev CLIs
 
 Usage:
-  aimux                  Launch TUI (default)
-  aimux apply <cli-name> Apply active provider binding for a CLI
-  aimux list             Show active multiplexes
+  aimux                    Launch TUI (default)
+  aimux apply <cli-name>   Apply active provider binding for a CLI
+  aimux list               Show active multiplexes
+  aimux backups <cli-name> List centralized backups for a CLI
+  aimux restore <cli-name> Restore the latest backup for a CLI
+  aimux version            Show version and check for updates
+  aimux update             Update aimux to the latest release
 
 Examples:
   aimux apply claude-code
-  aimux apply codex
-  aimux list
+  aimux backups claude-code
+  aimux restore claude-code
 `)
 }

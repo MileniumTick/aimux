@@ -3,8 +3,10 @@ package application
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/MileniumTick/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/infrastructure/config"
 )
 
 // SwitchUseCases handles profile switching and config mutation business logic.
@@ -295,4 +297,90 @@ func (uc *SwitchUseCases) GetModelsForProvider(providerID int64) ([]domain.Provi
 // ListAllModels returns all models across all providers.
 func (uc *SwitchUseCases) ListAllModels() ([]domain.ProviderModel, error) {
 	return uc.providerRepo.ListAllModels()
+}
+
+// FindCLIByName resolves a target CLI by (case-insensitive) name.
+func (uc *SwitchUseCases) FindCLIByName(name string) (*domain.TargetCLI, error) {
+	clis, err := uc.cliRepo.List()
+	if err != nil {
+		return nil, fmt.Errorf("list CLIs: %w", err)
+	}
+	for i := range clis {
+		if strings.EqualFold(clis[i].Name, name) {
+			return &clis[i], nil
+		}
+	}
+	return nil, fmt.Errorf("CLI '%s' not found", name)
+}
+
+// ListBackups returns the centralized backups for a target CLI's config file,
+// newest first.
+func (uc *SwitchUseCases) ListBackups(cliName string) ([]config.BackupEntry, error) {
+	cli, err := uc.FindCLIByName(cliName)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := ResolveTargetConfigPath(cli.ConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	return config.ListBackups(resolved)
+}
+
+// RestoreLatest restores the most recent centralized backup for a target CLI's
+// config file. Returns the backup path that was restored.
+func (uc *SwitchUseCases) RestoreLatest(cliName string) (string, error) {
+	cli, err := uc.FindCLIByName(cliName)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := ResolveTargetConfigPath(cli.ConfigPath)
+	if err != nil {
+		return "", err
+	}
+	backups, err := config.ListBackups(resolved)
+	if err != nil {
+		return "", err
+	}
+	if len(backups) == 0 {
+		return "", fmt.Errorf("no backups for '%s'", cliName)
+	}
+	latest := backups[0] // ListBackups is newest-first
+	if err := config.RestoreBackup(latest.Path, resolved); err != nil {
+		return "", fmt.Errorf("restore backup: %w", err)
+	}
+	return latest.Path, nil
+}
+
+// BackupOption is a presentation-friendly backup entry for the TUI.
+type BackupOption struct {
+	Label string // timestamp segment, e.g. "2026-06-18T03-21-00Z"
+	Path  string // absolute path to the backup file
+}
+
+// BackupOptions returns centralized backups for a CLI as display options,
+// newest first. Empty (no error) when there are none.
+func (uc *SwitchUseCases) BackupOptions(cliName string) ([]BackupOption, error) {
+	entries, err := uc.ListBackups(cliName)
+	if err != nil {
+		return nil, err
+	}
+	opts := make([]BackupOption, len(entries))
+	for i, e := range entries {
+		opts[i] = BackupOption{Label: e.When, Path: e.Path}
+	}
+	return opts, nil
+}
+
+// RestoreBackup restores a specific backup file for a target CLI's config.
+func (uc *SwitchUseCases) RestoreBackup(cliName, backupPath string) error {
+	cli, err := uc.FindCLIByName(cliName)
+	if err != nil {
+		return err
+	}
+	resolved, err := ResolveTargetConfigPath(cli.ConfigPath)
+	if err != nil {
+		return err
+	}
+	return config.RestoreBackup(backupPath, resolved)
 }
