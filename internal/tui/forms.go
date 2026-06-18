@@ -149,6 +149,39 @@ type MapModelsResult struct {
 	Mappings map[string]string
 }
 
+// RegisterModelsResult holds the result of the model registration form.
+type RegisterModelsResult struct {
+	RegisteredModels []string
+}
+
+// NewRegisterModelsForm creates a multi-select form for choosing which models
+// to register in the target CLI's config file. Pre-selects the currently mapped
+// models as defaults.
+func NewRegisterModelsForm(models []domain.ProviderModel, preSelected map[string]bool, result *RegisterModelsResult) *huh.Form {
+	opts := make([]huh.Option[string], 0, len(models))
+	for _, m := range models {
+		opts = append(opts, huh.NewOption(m.ModelName, m.ModelName))
+	}
+
+	// Default selections: models that are already mapped
+	defaults := make([]string, 0, len(preSelected))
+	for _, m := range models {
+		if preSelected[m.ModelName] {
+			defaults = append(defaults, m.ModelName)
+		}
+	}
+
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Register Models").
+				Description("Select which models to include in the config file.").
+				Options(opts...).
+				Value(&result.RegisteredModels),
+		),
+	).WithHeight(10)
+}
+
 // EditCLIPathResult holds the values from the Edit CLI Path form.
 type EditCLIPathResult struct {
 	CLIID      int64
