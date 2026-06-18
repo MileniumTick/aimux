@@ -1021,7 +1021,7 @@ func (m *model) isSingleSelectForm() bool {
 		m.currentView == switchProviderView ||
 		m.currentView == manageCLIView ||
 		m.currentView == editCLIPathView ||
-		m.currentView == switchMapModelsView
+		m.currentView == switchMapModelsView ||
 		m.currentView == restoreCLIView ||
 		m.currentView == restoreBackupView
 }
