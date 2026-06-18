@@ -1,0 +1,33 @@
+# Binary
+/aimux
+
+# SQLite WAL/journal files
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Temporary files (atomic write artifacts)
+*.tmp
+
+# Backup files created by config mutators
+*.aimux-backup-*
+
+# IDE/editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+
+# GoReleaser artifacts
+dist/
+
+# Test coverage
+cover.out
+cover.html
+
+# Environment files (may contain secrets)
+.env
