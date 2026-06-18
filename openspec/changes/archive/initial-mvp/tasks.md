@@ -39,7 +39,7 @@ Phase 1 (Scaffold)
 **Depends on**: Nothing
 **Parallel with**: Nothing (all other tasks depend on directory structure)
 
-- Run `go mod init github.com/jchavarriam/aimux`
+- Run `go mod init github.com/MileniumTick/aimux`
 - Create directory structure:
   ```
   aimux/

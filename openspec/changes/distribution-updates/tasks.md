@@ -262,7 +262,7 @@ Form-driven views (`addProviderView`, `deleteProviderView`, `switchTargetCLIView
 ## Phase 5: Startup Update Check Integration in `main.go`
 
 **Files**: `/Users/jchavarriam/workspace/personal/aimux/main.go`
-**Import map**: adds `net/http`, `time`, `update "github.com/jchavarriam/aimux/internal/infrastructure/update"`, `tui "github.com/jchavarriam/aimux/internal/tui"`
+**Import map**: adds `net/http`, `time`, `update "github.com/MileniumTick/aimux/internal/infrastructure/update"`, `tui "github.com/MileniumTick/aimux/internal/tui"`
 **Dependencies**: Phase 1 (Version var), Phase 3 (update package), Phase 4 (SetUpdateInfo)
 
 ### T5.1: Wire background goroutine after DB init

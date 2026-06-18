@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/jchavarriam/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/domain"
 	_ "modernc.org/sqlite"
-	"github.com/jchavarriam/aimux/internal/infrastructure/sqlite"
+	"github.com/MileniumTick/aimux/internal/infrastructure/sqlite"
 )
 
 func TestFetchModels_OpenAIFormat(t *testing.T) {

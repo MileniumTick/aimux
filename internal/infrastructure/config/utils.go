@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -41,10 +43,14 @@ func AcquireFlock(fd uintptr, lockType int, timeout time.Duration) error {
 	}
 }
 
+// trailingCommaRE matches a comma followed by optional whitespace and a closing
+// brace or bracket — the most common JSON syntax error in hand-edited config files.
+var trailingCommaRE = regexp.MustCompile(`,(\s*[}\]])`)
+
 // ReadJSONWithLock reads a JSON file with a shared lock and returns its content.
 // If the file does not exist, returns an empty map and no error.
 // If the file exists but is empty, returns an empty map and no error.
-// If the file has content but cannot be parsed as JSON, returns an error.
+// Tolerates trailing commas (common in hand-edited JSON) by retrying with cleanup.
 func ReadJSONWithLock(path string) (map[string]any, error) {
 	f, err := os.OpenFile(path, os.O_RDONLY, 0)
 	if err != nil {
@@ -60,19 +66,27 @@ func ReadJSONWithLock(path string) (map[string]any, error) {
 	}
 	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 
-	// Check if file has content before decoding
 	fi, err := f.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("stat config file: %w", err)
 	}
+	if fi.Size() == 0 {
+		return make(map[string]any), nil
+	}
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("read config file: %w", err)
+	}
 
 	result := make(map[string]any)
-	if err := json.NewDecoder(f).Decode(&result); err != nil {
-		// Empty file — treat as empty object
-		if fi.Size() == 0 {
-			return make(map[string]any), nil
+	if err := json.Unmarshal(data, &result); err != nil {
+		// ponytail: strip trailing commas and retry — covers the most common
+		// hand-edited JSON mistake without pulling in a lenient parser.
+		sanitized := trailingCommaRE.ReplaceAll(data, []byte("$1"))
+		if err2 := json.Unmarshal(sanitized, &result); err2 != nil {
+			return nil, fmt.Errorf("%w: %w", ErrConfigParse, err)
 		}
-		return nil, fmt.Errorf("%w: %w", ErrConfigParse, err)
 	}
 	return result, nil
 }

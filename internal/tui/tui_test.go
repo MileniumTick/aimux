@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jchavarriam/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/domain"
 )
 
 func TestRenderTable_EmptyState(t *testing.T) {

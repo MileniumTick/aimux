@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jchavarriam/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/domain"
 )
 
 const (

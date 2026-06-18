@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jchavarriam/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/domain"
 )
 
 // ProviderRepository implements domain.ProviderRepository.

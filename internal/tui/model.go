@@ -9,8 +9,8 @@ import (
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/jchavarriam/aimux/internal/application"
-	"github.com/jchavarriam/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/application"
+	"github.com/MileniumTick/aimux/internal/domain"
 )
 
 type viewType int

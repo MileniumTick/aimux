@@ -208,7 +208,7 @@ brews:
       owner: jchavarriam
       name: homebrew-tap
       branch: main
-    homepage: "https://github.com/jchavarriam/aimux"
+    homepage: "https://github.com/MileniumTick/aimux"
     description: "AI Multiplexer — switch AI models across CLIs from a single TUI"
     license: "MIT"
     test: |

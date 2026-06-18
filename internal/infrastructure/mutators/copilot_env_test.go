@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jchavarriam/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/domain"
 )
 
 func defaultCopilotProvider() domain.Provider {

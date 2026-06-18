@@ -8,11 +8,11 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/jchavarriam/aimux/internal/application"
-	"github.com/jchavarriam/aimux/internal/domain"
-	"github.com/jchavarriam/aimux/internal/infrastructure/mutators"
-	sqlite2 "github.com/jchavarriam/aimux/internal/infrastructure/sqlite"
-	"github.com/jchavarriam/aimux/internal/tui"
+	"github.com/MileniumTick/aimux/internal/application"
+	"github.com/MileniumTick/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/infrastructure/mutators"
+	sqlite2 "github.com/MileniumTick/aimux/internal/infrastructure/sqlite"
+	"github.com/MileniumTick/aimux/internal/tui"
 )
 
 func main() {

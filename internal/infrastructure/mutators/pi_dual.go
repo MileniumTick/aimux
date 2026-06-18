@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jchavarriam/aimux/internal/domain"
-	"github.com/jchavarriam/aimux/internal/infrastructure/config"
+	"github.com/MileniumTick/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/infrastructure/config"
 )
 
 // PiDualJSON mutates Pi's dual JSON config files: models.json (provider definitions

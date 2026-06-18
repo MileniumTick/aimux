@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/jchavarriam/aimux/internal/domain"
-	"github.com/jchavarriam/aimux/internal/infrastructure/config"
+	"github.com/MileniumTick/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/infrastructure/config"
 )
 
 // OpenCodeProviderJSON mutates OpenCode's opencode.json by building a provider

@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
-	"github.com/jchavarriam/aimux/internal/domain"
-	"github.com/jchavarriam/aimux/internal/infrastructure/config"
+	"github.com/MileniumTick/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/infrastructure/config"
 )
 
 // CodexConfigTOML mutates Codex's config.toml by building model_providers tables

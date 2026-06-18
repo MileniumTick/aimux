@@ -6,9 +6,9 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/jchavarriam/aimux/internal/domain"
-	"github.com/jchavarriam/aimux/internal/infrastructure/mutators"
-	"github.com/jchavarriam/aimux/internal/infrastructure/sqlite"
+	"github.com/MileniumTick/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/infrastructure/mutators"
+	"github.com/MileniumTick/aimux/internal/infrastructure/sqlite"
 )
 
 func setupTestDB(t *testing.T) *sql.DB {

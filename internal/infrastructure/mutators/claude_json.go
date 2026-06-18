@@ -3,8 +3,8 @@ package mutators
 import (
 	"os"
 
-	"github.com/jchavarriam/aimux/internal/domain"
-	"github.com/jchavarriam/aimux/internal/infrastructure/config"
+	"github.com/MileniumTick/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/infrastructure/config"
 )
 
 // ClaudeSettingsJSON mutates Claude Code's settings.json by building an env
