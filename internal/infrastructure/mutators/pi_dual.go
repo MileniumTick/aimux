@@ -71,9 +71,27 @@ func (m *PiDualJSON) Mutate(
 	}
 
 	// Build models array with metadata from catalog/API.
+	// If _registered_models is provided, use that list (free selection);
+	// otherwise fall back to mapped model values (backward compatible).
 	modelMeta, _ := mutatorConfig["_model_metadata"].(map[string]any)
-	modelsArr := make([]any, 0)
-	for _, modelName := range modelMappings {
+	modelList := make([]string, 0)
+	if registered, ok := mutatorConfig["_registered_models"].([]any); ok && len(registered) > 0 {
+		for _, r := range registered {
+			if name, ok := r.(string); ok && name != "" {
+				modelList = append(modelList, name)
+			}
+		}
+	}
+	if len(modelList) == 0 {
+		for _, modelName := range modelMappings {
+			if modelName != "" {
+				modelList = append(modelList, modelName)
+			}
+		}
+	}
+
+	modelsArr := make([]any, 0, len(modelList))
+	for _, modelName := range modelList {
 		if modelName == "" {
 			continue
 		}
