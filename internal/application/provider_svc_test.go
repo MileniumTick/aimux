@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/MileniumTick/aimux/internal/domain"
-	_ "modernc.org/sqlite"
 	"github.com/MileniumTick/aimux/internal/infrastructure/sqlite"
+	_ "modernc.org/sqlite"
 )
 
 func TestFetchModels_OpenAIFormat(t *testing.T) {
@@ -37,7 +37,7 @@ func TestFetchModels_OpenAIFormat(t *testing.T) {
 	defer srv.Close()
 
 	uc := setupProviderTest(t)
-	id, err := uc.Add("TestOpenAI", srv.URL, "api-key", "test-token", domain.ApiTypeOpenAI)
+	id, err := uc.Add("TestOpenAI", srv.URL, "", "api-key", "test-token", domain.ApiTypeOpenAI)
 	if err != nil {
 		t.Fatalf("Add provider failed: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestFetchModels_AnthropicFallbackFormat(t *testing.T) {
 	defer srv.Close()
 
 	uc := setupProviderTest(t)
-	id, err := uc.Add("TestAnthropic", srv.URL, "api-key", "test-token", domain.ApiTypeOpenAI)
+	id, err := uc.Add("TestAnthropic", srv.URL, "", "api-key", "test-token", domain.ApiTypeOpenAI)
 	if err != nil {
 		t.Fatalf("Add provider failed: %v", err)
 	}
@@ -88,12 +88,12 @@ func TestFetchModels_Unauthorized(t *testing.T) {
 
 	uc := setupProviderTest(t)
 
-	id, err := uc.providerRepo.Add("TestUnauthorized", srv.URL, "api-key", "test-token", domain.ApiTypeOpenAI)
+	id, err := uc.providerRepo.Add("TestUnauthorized", srv.URL, "", "api-key", "test-token", domain.ApiTypeOpenAI)
 	if err != nil {
 		t.Fatalf("AddProvider failed: %v", err)
 	}
 
-	err = uc.FetchModels(id, srv.URL, "test-token", domain.ApiTypeOpenAI)
+	err = uc.FetchModels(id, srv.URL, "", "test-token", domain.ApiTypeOpenAI)
 	if err == nil {
 		t.Fatal("expected error for 401, got nil")
 	}
@@ -109,9 +109,9 @@ func TestFetchModels_RateLimited(t *testing.T) {
 	defer srv.Close()
 
 	uc := setupProviderTest(t)
-	id, _ := uc.providerRepo.Add("TestRateLimit", srv.URL, "api-key", "test-token", domain.ApiTypeOpenAI)
+	id, _ := uc.providerRepo.Add("TestRateLimit", srv.URL, "", "api-key", "test-token", domain.ApiTypeOpenAI)
 
-	err := uc.FetchModels(id, srv.URL, "test-token", domain.ApiTypeOpenAI)
+	err := uc.FetchModels(id, srv.URL, "", "test-token", domain.ApiTypeOpenAI)
 	if err == nil {
 		t.Fatal("expected error for 429, got nil")
 	}
@@ -127,9 +127,9 @@ func TestFetchModels_ServerError(t *testing.T) {
 	defer srv.Close()
 
 	uc := setupProviderTest(t)
-	id, _ := uc.providerRepo.Add("TestServerError", srv.URL, "api-key", "test-token", domain.ApiTypeOpenAI)
+	id, _ := uc.providerRepo.Add("TestServerError", srv.URL, "", "api-key", "test-token", domain.ApiTypeOpenAI)
 
-	err := uc.FetchModels(id, srv.URL, "test-token", domain.ApiTypeOpenAI)
+	err := uc.FetchModels(id, srv.URL, "", "test-token", domain.ApiTypeOpenAI)
 	if err == nil {
 		t.Fatal("expected error for 500, got nil")
 	}
@@ -143,9 +143,9 @@ func TestFetchModels_UnparseableResponse(t *testing.T) {
 	defer srv.Close()
 
 	uc := setupProviderTest(t)
-	id, _ := uc.providerRepo.Add("TestUnparseable", srv.URL, "api-key", "test-token", domain.ApiTypeOpenAI)
+	id, _ := uc.providerRepo.Add("TestUnparseable", srv.URL, "", "api-key", "test-token", domain.ApiTypeOpenAI)
 
-	err := uc.FetchModels(id, srv.URL, "test-token", domain.ApiTypeOpenAI)
+	err := uc.FetchModels(id, srv.URL, "", "test-token", domain.ApiTypeOpenAI)
 	if err == nil {
 		t.Fatal("expected error for unparseable response, got nil")
 	}
@@ -163,7 +163,7 @@ func TestRetryFetch_Success(t *testing.T) {
 	defer srv.Close()
 
 	uc := setupProviderTest(t)
-	id, err := uc.Add("TestRetry", srv.URL, "api-key", "test-token", domain.ApiTypeOpenAI)
+	id, err := uc.Add("TestRetry", srv.URL, "", "api-key", "test-token", domain.ApiTypeOpenAI)
 	if err != nil {
 		t.Fatalf("Add provider failed: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestRetryFetch_Success(t *testing.T) {
 
 func TestRetryFetch_Failure(t *testing.T) {
 	uc := setupProviderTest(t)
-	id, _ := uc.providerRepo.Add("RetryFail", "http://localhost:19999", "api-key", "bad-token", domain.ApiTypeOpenAI)
+	id, _ := uc.providerRepo.Add("RetryFail", "http://localhost:19999", "", "api-key", "bad-token", domain.ApiTypeOpenAI)
 	uc.providerRepo.UpdateStatus(id, "error")
 
 	_, err := uc.RetryFetch(id)
@@ -206,9 +206,9 @@ func TestFetchModels_NoResponseBody(t *testing.T) {
 	defer srv.Close()
 
 	uc := setupProviderTest(t)
-	id, _ := uc.providerRepo.Add("EmptyBody", srv.URL, "api-key", "token", domain.ApiTypeOpenAI)
+	id, _ := uc.providerRepo.Add("EmptyBody", srv.URL, "", "api-key", "token", domain.ApiTypeOpenAI)
 
-	err := uc.FetchModels(id, srv.URL, "token", domain.ApiTypeOpenAI)
+	err := uc.FetchModels(id, srv.URL, "", "token", domain.ApiTypeOpenAI)
 	if err == nil {
 		t.Fatal("expected error for empty response with no model arrays, got nil")
 	}
@@ -218,12 +218,12 @@ func TestProviderRepo_AddDuplicate(t *testing.T) {
 	db := setupTestDB(t)
 	providerRepo := &sqlite.ProviderRepository{DB: db}
 
-	_, err := providerRepo.Add("Duplicate", "https://api.test.com", "key1", "token1", domain.ApiTypeOpenAI)
+	_, err := providerRepo.Add("Duplicate", "https://api.test.com", "", "key1", "token1", domain.ApiTypeOpenAI)
 	if err != nil {
 		t.Fatalf("first Add failed: %v", err)
 	}
 
-	_, err = providerRepo.Add("Duplicate", "https://api.test.com", "key2", "token2", domain.ApiTypeOpenAI)
+	_, err = providerRepo.Add("Duplicate", "https://api.test.com", "", "key2", "token2", domain.ApiTypeOpenAI)
 	if err == nil {
 		t.Fatal("expected error for duplicate provider name, got nil")
 	}

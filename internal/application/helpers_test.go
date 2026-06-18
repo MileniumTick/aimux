@@ -47,8 +47,8 @@ func setupProviderTest(t *testing.T) *ProviderUseCases {
 }
 
 type switchTestHarness struct {
-	uc  *SwitchUseCases
-	db  *sql.DB
+	uc *SwitchUseCases
+	db *sql.DB
 }
 
 // setupSwitchTest returns a SwitchUseCases for tests that don't need direct DB access.
@@ -70,14 +70,14 @@ func setupSwitchHarness(t *testing.T) *switchTestHarness {
 	cliRepo := &sqlite.TargetCLIRepository{DB: db}
 	multiplexRepo := &sqlite.MultiplexRepository{DB: db}
 	return &switchTestHarness{
-		uc:  NewSwitchUseCases(providerRepo, cliRepo, multiplexRepo, defaultMutatorRegistry()),
-		db:  db,
+		uc: NewSwitchUseCases(providerRepo, cliRepo, multiplexRepo, defaultMutatorRegistry()),
+		db: db,
 	}
 }
 
 func addTestProvider(t *testing.T, uc *SwitchUseCases, name, baseURL string) int64 {
 	t.Helper()
-	id, err := uc.providerRepo.Add(name, baseURL, "test-api-key", "test-auth-token", domain.ApiTypeOpenAI)
+	id, err := uc.providerRepo.Add(name, baseURL, "", "test-api-key", "test-auth-token", domain.ApiTypeOpenAI)
 	if err != nil {
 		t.Fatalf("Add provider failed: %v", err)
 	}
