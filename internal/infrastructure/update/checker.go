@@ -67,7 +67,7 @@ func fetchLatestRelease(httpClient *http.Client, version string) (*githubRelease
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET",
-		"https://api.github.com/repos/jchavarriam/aimux/releases/latest", nil)
+		"https://api.github.com/repos/MileniumTick/aimux/releases/latest", nil)
 	if err != nil {
 		return nil, err
 	}
