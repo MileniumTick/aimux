@@ -32,8 +32,8 @@ func NewProviderUseCases(providerRepo domain.ProviderRepository, multiplexRepo d
 }
 
 // Add creates a new provider and fetches its models.
-func (uc *ProviderUseCases) Add(name, baseURL, apiKey, authToken string, apiType domain.ApiType) (int64, error) {
-	id, err := uc.providerRepo.Add(name, baseURL, apiKey, authToken, apiType)
+func (uc *ProviderUseCases) Add(name, baseURL, discoveryURL, apiKey, authToken string, apiType domain.ApiType) (int64, error) {
+	id, err := uc.providerRepo.Add(name, baseURL, discoveryURL, apiKey, authToken, apiType)
 	if err != nil {
 		if strings.Contains(err.Error(), "already exists") {
 			return 0, err
@@ -42,7 +42,7 @@ func (uc *ProviderUseCases) Add(name, baseURL, apiKey, authToken string, apiType
 	}
 
 	// Trigger model fetch
-	if fetchErr := uc.FetchModels(id, baseURL, authToken, apiType); fetchErr != nil {
+	if fetchErr := uc.FetchModels(id, baseURL, discoveryURL, authToken, apiType); fetchErr != nil {
 		// Fetch failure is non-fatal — provider is saved with error status
 		_ = uc.providerRepo.UpdateStatus(id, "error")
 		return id, fmt.Errorf("provider created but model fetch failed: %w", fetchErr)
@@ -62,14 +62,14 @@ func (uc *ProviderUseCases) Get(id int64) (domain.Provider, error) {
 }
 
 // Update updates a provider's credentials and API type.
-func (uc *ProviderUseCases) Update(id int64, baseURL, apiKey, authToken string, apiType domain.ApiType) error {
-	if err := uc.providerRepo.Update(id, baseURL, apiKey, authToken, apiType); err != nil {
+func (uc *ProviderUseCases) Update(id int64, baseURL, discoveryURL, apiKey, authToken string, apiType domain.ApiType) error {
+	if err := uc.providerRepo.Update(id, baseURL, discoveryURL, apiKey, authToken, apiType); err != nil {
 		return err
 	}
 	// FetchModels -> InsertModels performs an atomic delete+insert inside a single
 	// transaction, so we no longer pre-delete here. The old pre-delete left the
 	// provider with an empty model list whenever the re-fetch failed.
-	if fetchErr := uc.FetchModels(id, baseURL, authToken, apiType); fetchErr != nil {
+	if fetchErr := uc.FetchModels(id, baseURL, discoveryURL, authToken, apiType); fetchErr != nil {
 		_ = uc.providerRepo.UpdateStatus(id, "error")
 		return fmt.Errorf("provider updated but model fetch failed: %w", fetchErr)
 	}
@@ -82,14 +82,19 @@ func (uc *ProviderUseCases) Delete(id int64) error {
 }
 
 // FetchModels fetches models from the provider's API, branching on apiType.
-func (uc *ProviderUseCases) FetchModels(providerID int64, baseURL, authToken string, apiType domain.ApiType) error {
+// Uses discoveryURL for model list endpoint when set, baseURL otherwise.
+func (uc *ProviderUseCases) FetchModels(providerID int64, baseURL, discoveryURL, authToken string, apiType domain.ApiType) error {
+	fetchURL := baseURL
+	if discoveryURL != "" {
+		fetchURL = discoveryURL
+	}
 	switch apiType {
 	case domain.ApiTypeAnthropic:
-		return uc.fetchAnthropicModels(providerID, baseURL, authToken)
+		return uc.fetchAnthropicModels(providerID, fetchURL, authToken)
 	case domain.ApiTypeGoogle:
-		return uc.fetchGoogleModels(providerID, baseURL, authToken)
+		return uc.fetchGoogleModels(providerID, fetchURL, authToken)
 	default:
-		return uc.fetchOpenAIModels(providerID, baseURL, authToken)
+		return uc.fetchOpenAIModels(providerID, fetchURL, authToken)
 	}
 }
 
@@ -229,13 +234,17 @@ func (uc *ProviderUseCases) saveModelMetadata(providerID int64, modelNames []str
 
 // parseModelCapabilities extracts metadata for a specific model from the raw
 // API response, then enriches with the known catalog.
+// Strips Bifrost's Provider/ prefix before catalog lookup so
+// "Opencode/deepseek-v4-flash" still finds "deepseek-v4-flash" in the catalog.
 func (uc *ProviderUseCases) parseModelCapabilities(modelName string, body []byte, apiType domain.ApiType) domain.ModelMetadata {
-	md := config.LookupModelMetadata(modelName) // catalog first as base
+	// Strip Bifrost's Provider/ prefix for catalog lookup
+	baseName := config.StripProviderPrefix(modelName)
+	md := config.LookupModelMetadata(baseName) // catalog first as base
 
 	// Merge API-provided metadata on top
 	switch apiType {
 	case domain.ApiTypeGoogle:
-		md = mergeMetadata(md, parseGoogleModelMetadata(modelName, body))
+		md = mergeMetadata(md, parseGoogleModelMetadata(baseName, body))
 		// Anthropic and OpenAI APIs don't return per-model capabilities beyond the ID
 	}
 
@@ -383,7 +392,7 @@ func (uc *ProviderUseCases) RetryFetch(providerID int64) (*FetchDiff, error) {
 		oldSet[m.ModelName] = true
 	}
 
-	if err := uc.FetchModels(providerID, provider.BaseURL, provider.AuthToken, provider.ApiType); err != nil {
+	if err := uc.FetchModels(providerID, provider.BaseURL, provider.DiscoveryURL, provider.AuthToken, provider.ApiType); err != nil {
 		if strings.Contains(err.Error(), "rate limited") {
 			return &FetchDiff{Error: err.Error()}, nil
 		}

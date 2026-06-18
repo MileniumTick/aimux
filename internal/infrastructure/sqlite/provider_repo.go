@@ -15,10 +15,10 @@ type ProviderRepository struct {
 }
 
 // Add inserts a new provider and returns its ID.
-func (r *ProviderRepository) Add(name, baseURL, apiKey, authToken string, apiType domain.ApiType) (int64, error) {
+func (r *ProviderRepository) Add(name, baseURL, discoveryURL, apiKey, authToken string, apiType domain.ApiType) (int64, error) {
 	result, err := r.DB.Exec(
-		`INSERT INTO providers (name, base_url, api_key, auth_token, api_type, status) VALUES (?, ?, ?, ?, ?, 'active')`,
-		name, baseURL, apiKey, authToken, string(apiType),
+		`INSERT INTO providers (name, base_url, discovery_url, api_key, auth_token, api_type, status) VALUES (?, ?, ?, ?, ?, ?, 'active')`,
+		name, baseURL, discoveryURL, apiKey, authToken, string(apiType),
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
@@ -37,9 +37,9 @@ func (r *ProviderRepository) Add(name, baseURL, apiKey, authToken string, apiTyp
 func (r *ProviderRepository) Get(id int64) (domain.Provider, error) {
 	var p domain.Provider
 	err := r.DB.QueryRow(
-		`SELECT id, name, base_url, api_key, auth_token, api_type, status, created_at, updated_at FROM providers WHERE id = ?`,
+		`SELECT id, name, base_url, discovery_url, api_key, auth_token, api_type, status, created_at, updated_at FROM providers WHERE id = ?`,
 		id,
-	).Scan(&p.ID, &p.Name, &p.BaseURL, &p.APIKey, &p.AuthToken, &p.ApiType, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.Name, &p.BaseURL, &p.DiscoveryURL, &p.APIKey, &p.AuthToken, &p.ApiType, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return p, fmt.Errorf("get provider %d: %w", id, err)
 	}
@@ -49,7 +49,7 @@ func (r *ProviderRepository) Get(id int64) (domain.Provider, error) {
 // List returns all providers ordered by name ascending.
 func (r *ProviderRepository) List() ([]domain.Provider, error) {
 	rows, err := r.DB.Query(
-		`SELECT id, name, base_url, api_key, auth_token, api_type, status, created_at, updated_at FROM providers ORDER BY name ASC`,
+		`SELECT id, name, base_url, discovery_url, api_key, auth_token, api_type, status, created_at, updated_at FROM providers ORDER BY name ASC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list providers: %w", err)
@@ -59,7 +59,7 @@ func (r *ProviderRepository) List() ([]domain.Provider, error) {
 	var providers []domain.Provider
 	for rows.Next() {
 		var p domain.Provider
-		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.APIKey, &p.AuthToken, &p.ApiType, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.DiscoveryURL, &p.APIKey, &p.AuthToken, &p.ApiType, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan provider: %w", err)
 		}
 		providers = append(providers, p)
@@ -67,11 +67,11 @@ func (r *ProviderRepository) List() ([]domain.Provider, error) {
 	return providers, rows.Err()
 }
 
-// Update updates a provider's base_url, api_key, auth_token, and api_type.
-func (r *ProviderRepository) Update(id int64, baseURL, apiKey, authToken string, apiType domain.ApiType) error {
+// Update updates a provider's base_url, discovery_url, api_key, auth_token, and api_type.
+func (r *ProviderRepository) Update(id int64, baseURL, discoveryURL, apiKey, authToken string, apiType domain.ApiType) error {
 	_, err := r.DB.Exec(
-		`UPDATE providers SET base_url = ?, api_key = ?, auth_token = ?, api_type = ?, updated_at = datetime('now') WHERE id = ?`,
-		baseURL, apiKey, authToken, string(apiType), id,
+		`UPDATE providers SET base_url = ?, discovery_url = ?, api_key = ?, auth_token = ?, api_type = ?, updated_at = datetime('now') WHERE id = ?`,
+		baseURL, discoveryURL, apiKey, authToken, string(apiType), id,
 	)
 	if err != nil {
 		return fmt.Errorf("update provider %d: %w", id, err)
@@ -101,6 +101,8 @@ func (r *ProviderRepository) Delete(id int64) error {
 }
 
 // InsertModels clears existing models for a provider and inserts new ones.
+// Deduplicates model names to avoid UNIQUE constraint violations (Bifrost may
+// return the same model from multiple upstreams).
 func (r *ProviderRepository) InsertModels(providerID int64, modelNames []string) error {
 	tx, err := r.DB.Begin()
 	if err != nil {
@@ -113,12 +115,24 @@ func (r *ProviderRepository) InsertModels(providerID int64, modelNames []string)
 		return fmt.Errorf("clear models: %w", err)
 	}
 
+	// Deduplicate before insert — Bifrost may return the same model from
+	// multiple upstreams.
+	seen := make(map[string]struct{}, len(modelNames))
+	unique := make([]string, 0, len(modelNames))
+	for _, name := range modelNames {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		unique = append(unique, name)
+	}
+
 	// Insert new models
-	if len(modelNames) > 0 {
+	if len(unique) > 0 {
 		stmt := `INSERT INTO provider_models (provider_id, model_name) VALUES `
 		var args []any
-		placeholders := make([]string, 0, len(modelNames))
-		for _, name := range modelNames {
+		placeholders := make([]string, 0, len(unique))
+		for _, name := range unique {
 			placeholders = append(placeholders, "(?, ?)")
 			args = append(args, providerID, name)
 		}

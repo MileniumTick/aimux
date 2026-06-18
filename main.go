@@ -8,13 +8,13 @@ import (
 	"os"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/MileniumTick/aimux/internal/application"
 	"github.com/MileniumTick/aimux/internal/domain"
 	"github.com/MileniumTick/aimux/internal/infrastructure/mutators"
 	sqlite2 "github.com/MileniumTick/aimux/internal/infrastructure/sqlite"
 	"github.com/MileniumTick/aimux/internal/infrastructure/update"
 	"github.com/MileniumTick/aimux/internal/tui"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 // version is the aimux binary version. Override at build time with
@@ -83,6 +83,7 @@ func setupDB() (db *sql.DB, cleanup func(), err error) {
 		sqlite2.MigrationAddMutatorColumns,
 		sqlite2.MigrationAddApiTypeColumn,
 		sqlite2.MigrationAddModelMetadataColumn,
+		sqlite2.MigrationAddDiscoveryURLColumn,
 		sqlite2.CreateIndexes,
 		sqlite2.SeedTargetCLIs,
 	} {

@@ -50,6 +50,7 @@ func RunMigrations(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL UNIQUE,
 			base_url TEXT NOT NULL,
+			discovery_url TEXT NOT NULL DEFAULT '',
 			api_key TEXT NOT NULL DEFAULT '',
 			auth_token TEXT NOT NULL DEFAULT '',
 			api_type TEXT NOT NULL DEFAULT 'openai',
@@ -106,6 +107,22 @@ func MigrationAddMutatorColumns(db *sql.DB) error {
 		if _, err := db.Exec(fmt.Sprintf("ALTER TABLE target_clis ADD COLUMN %s %s", c.name, c.def)); err != nil {
 			return fmt.Errorf("add mutator columns migration: %w", err)
 		}
+	}
+	return nil
+}
+
+// MigrationAddDiscoveryURLColumn adds the discovery_url column to providers.
+// Idempotent: checks if column exists before altering.
+func MigrationAddDiscoveryURLColumn(db *sql.DB) error {
+	exists, err := columnExists(db, "providers", "discovery_url")
+	if err != nil {
+		return fmt.Errorf("check discovery_url column: %w", err)
+	}
+	if exists {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE providers ADD COLUMN discovery_url TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add discovery_url column migration: %w", err)
 	}
 	return nil
 }
