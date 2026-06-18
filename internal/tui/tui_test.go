@@ -64,8 +64,8 @@ func TestRenderMenu_SwitchDisabled(t *testing.T) {
 }
 
 func TestMenuItemCount(t *testing.T) {
-	if MenuItemCount() != 4 {
-		t.Errorf("expected 4 menu items, got %d", MenuItemCount())
+	if MenuItemCount() != 5 {
+		t.Errorf("expected 5 menu items, got %d", MenuItemCount())
 	}
 }
 

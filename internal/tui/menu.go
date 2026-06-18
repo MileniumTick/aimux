@@ -10,8 +10,9 @@ const (
 	menuItemSwitch          = 0
 	menuItemManageProviders = 1
 	menuItemManageCLIs      = 2
-	menuItemExit            = 3
-	menuItemCount           = 4
+	menuItemRestore         = 3
+	menuItemExit            = 4
+	menuItemCount           = 5
 )
 
 var (
@@ -52,6 +53,7 @@ func RenderMenu(selectedIndex int, hasProviders bool) string {
 		{"Switch", hasProviders},
 		{"Manage Providers", true},
 		{"Manage CLIs", true},
+		{"Restore Backup", true},
 		{"Exit", true},
 	}
 
