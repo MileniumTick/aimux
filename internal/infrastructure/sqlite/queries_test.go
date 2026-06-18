@@ -46,7 +46,7 @@ func TestAddProvider_Success(t *testing.T) {
 	defer db.Close()
 
 	repo := &ProviderRepository{DB: db}
-	id, err := repo.Add("Test Provider", "https://api.test.com/v1", "key123", "token456", domain.ApiTypeOpenAI)
+	id, err := repo.Add("Test Provider", "https://api.test.com/v1", "", "key123", "token456", domain.ApiTypeOpenAI)
 	if err != nil {
 		t.Fatalf("AddProvider failed: %v", err)
 	}
@@ -72,12 +72,12 @@ func TestAddProvider_DuplicateName(t *testing.T) {
 
 	repo := &ProviderRepository{DB: db}
 
-	_, err := repo.Add("Duplicate", "https://api.test.com", "key1", "token1", domain.ApiTypeOpenAI)
+	_, err := repo.Add("Duplicate", "https://api.test.com", "", "key1", "token1", domain.ApiTypeOpenAI)
 	if err != nil {
 		t.Fatalf("first AddProvider failed: %v", err)
 	}
 
-	_, err = repo.Add("Duplicate", "https://api.test.com", "key2", "token2", domain.ApiTypeOpenAI)
+	_, err = repo.Add("Duplicate", "https://api.test.com", "", "key2", "token2", domain.ApiTypeOpenAI)
 	if err == nil {
 		t.Fatal("expected error for duplicate provider name, got nil")
 	}
@@ -88,9 +88,9 @@ func TestListProviders_Sorted(t *testing.T) {
 	defer db.Close()
 
 	repo := &ProviderRepository{DB: db}
-	repo.Add("Zeta", "https://zeta.test", "k1", "t1", domain.ApiTypeOpenAI)
-	repo.Add("Alpha", "https://alpha.test", "k2", "t2", domain.ApiTypeOpenAI)
-	repo.Add("Beta", "https://beta.test", "k3", "t3", domain.ApiTypeOpenAI)
+	repo.Add("Zeta", "https://zeta.test", "", "k1", "t1", domain.ApiTypeOpenAI)
+	repo.Add("Alpha", "https://alpha.test", "", "k2", "t2", domain.ApiTypeOpenAI)
+	repo.Add("Beta", "https://beta.test", "", "k3", "t3", domain.ApiTypeOpenAI)
 
 	providers, err := repo.List()
 	if err != nil {
@@ -115,7 +115,7 @@ func TestUpdateProviderStatus(t *testing.T) {
 	defer db.Close()
 
 	repo := &ProviderRepository{DB: db}
-	id, _ := repo.Add("StatusTest", "https://test.com", "k", "t", domain.ApiTypeOpenAI)
+	id, _ := repo.Add("StatusTest", "https://test.com", "", "k", "t", domain.ApiTypeOpenAI)
 
 	if err := repo.UpdateStatus(id, "error"); err != nil {
 		t.Fatalf("UpdateProviderStatus failed: %v", err)
@@ -132,7 +132,7 @@ func TestDeleteProvider_Cascade(t *testing.T) {
 	defer db.Close()
 
 	repo := &ProviderRepository{DB: db}
-	id, _ := repo.Add("CascadeTest", "https://test.com", "k", "t", domain.ApiTypeOpenAI)
+	id, _ := repo.Add("CascadeTest", "https://test.com", "", "k", "t", domain.ApiTypeOpenAI)
 	repo.InsertModels(id, []string{"model-a", "model-b"})
 
 	models, err := repo.ListModels(id)
@@ -166,7 +166,7 @@ func TestInsertModels_ClearAndReInsert(t *testing.T) {
 	defer db.Close()
 
 	repo := &ProviderRepository{DB: db}
-	providerID, _ := repo.Add("ModelTest", "https://test.com", "k", "t", domain.ApiTypeOpenAI)
+	providerID, _ := repo.Add("ModelTest", "https://test.com", "", "k", "t", domain.ApiTypeOpenAI)
 
 	if err := repo.InsertModels(providerID, []string{"old-model-1", "old-model-2"}); err != nil {
 		t.Fatalf("first InsertModels failed: %v", err)
@@ -190,7 +190,7 @@ func TestInsertModels_EmptyList(t *testing.T) {
 	defer db.Close()
 
 	repo := &ProviderRepository{DB: db}
-	providerID, _ := repo.Add("EmptyModelTest", "https://test.com", "k", "t", domain.ApiTypeOpenAI)
+	providerID, _ := repo.Add("EmptyModelTest", "https://test.com", "", "k", "t", domain.ApiTypeOpenAI)
 
 	repo.InsertModels(providerID, []string{"model-1"})
 	if err := repo.InsertModels(providerID, []string{}); err != nil {
@@ -210,7 +210,7 @@ func TestSetAndGetActiveMultiplex(t *testing.T) {
 	providerRepo := &ProviderRepository{DB: db}
 	muxRepo := &MultiplexRepository{DB: db}
 
-	providerID, _ := providerRepo.Add("ActiveTest", "https://test.com", "k", "t", domain.ApiTypeOpenAI)
+	providerID, _ := providerRepo.Add("ActiveTest", "https://test.com", "", "k", "t", domain.ApiTypeOpenAI)
 
 	mappings := `{"ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4"}`
 
@@ -251,8 +251,8 @@ func TestSetActiveMultiplex_Replace(t *testing.T) {
 	providerRepo := &ProviderRepository{DB: db}
 	muxRepo := &MultiplexRepository{DB: db}
 
-	pid1, _ := providerRepo.Add("Prov1", "https://p1.test", "k1", "t1", domain.ApiTypeOpenAI)
-	pid2, _ := providerRepo.Add("Prov2", "https://p2.test", "k2", "t2", domain.ApiTypeOpenAI)
+	pid1, _ := providerRepo.Add("Prov1", "https://p1.test", "", "k1", "t1", domain.ApiTypeOpenAI)
+	pid2, _ := providerRepo.Add("Prov2", "https://p2.test", "", "k2", "t2", domain.ApiTypeOpenAI)
 
 	muxRepo.SetActive(1, pid1, `{"var": "model1"}`)
 	muxRepo.SetActive(1, pid2, `{"var": "model2"}`)
@@ -270,7 +270,7 @@ func TestClearActiveMultiplex(t *testing.T) {
 	providerRepo := &ProviderRepository{DB: db}
 	muxRepo := &MultiplexRepository{DB: db}
 
-	pid, _ := providerRepo.Add("ClearTest", "https://test.com", "k", "t", domain.ApiTypeOpenAI)
+	pid, _ := providerRepo.Add("ClearTest", "https://test.com", "", "k", "t", domain.ApiTypeOpenAI)
 	muxRepo.SetActive(1, pid, `{"var": "model"}`)
 
 	if err := muxRepo.ClearActive(1); err != nil {
@@ -290,7 +290,7 @@ func TestListActiveMultiplexes_Join(t *testing.T) {
 	providerRepo := &ProviderRepository{DB: db}
 	muxRepo := &MultiplexRepository{DB: db}
 
-	pid, _ := providerRepo.Add("JoinTest", "https://test.com", "k", "t", domain.ApiTypeOpenAI)
+	pid, _ := providerRepo.Add("JoinTest", "https://test.com", "", "k", "t", domain.ApiTypeOpenAI)
 	mappings := `{"model": "claude-sonnet-4"}`
 	muxRepo.SetActive(1, pid, mappings)
 
@@ -339,7 +339,7 @@ func TestListAllModels_Join(t *testing.T) {
 	defer db.Close()
 
 	repo := &ProviderRepository{DB: db}
-	pid, _ := repo.Add("ModelProvider", "https://test.com", "k", "t", domain.ApiTypeOpenAI)
+	pid, _ := repo.Add("ModelProvider", "https://test.com", "", "k", "t", domain.ApiTypeOpenAI)
 	repo.InsertModels(pid, []string{"claude-sonnet-4", "claude-haiku-3"})
 
 	models, err := repo.ListAllModels()
@@ -361,7 +361,7 @@ func TestDeleteProvider_ActiveMultiplexCascade(t *testing.T) {
 	providerRepo := &ProviderRepository{DB: db}
 	muxRepo := &MultiplexRepository{DB: db}
 
-	pid, _ := providerRepo.Add("CascadeMX", "https://test.com", "k", "t", domain.ApiTypeOpenAI)
+	pid, _ := providerRepo.Add("CascadeMX", "https://test.com", "", "k", "t", domain.ApiTypeOpenAI)
 	muxRepo.SetActive(1, pid, `{"model": "m1"}`)
 
 	if err := providerRepo.Delete(pid); err != nil {

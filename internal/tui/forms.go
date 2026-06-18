@@ -5,17 +5,18 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/charmbracelet/huh"
 	"github.com/MileniumTick/aimux/internal/domain"
+	"github.com/charmbracelet/huh"
 )
 
 // AddProviderResult holds the values submitted from the Add Provider form.
 type AddProviderResult struct {
-	Name      string
-	BaseURL   string
-	APIKey    string
-	AuthToken string
-	ApiType   string
+	Name         string
+	BaseURL      string
+	DiscoveryURL string // optional, for model discovery
+	APIKey       string
+	AuthToken    string
+	ApiType      string
 }
 
 // NewAddProviderForm creates a form for adding a new provider.
@@ -68,13 +69,18 @@ func NewAddProviderForm(result *AddProviderResult) *huh.Form {
 				Description("Optional if same as API Key").
 				Value(&result.AuthToken).
 				EchoMode(huh.EchoModePassword),
+			huh.NewInput().
+				Title("Discovery URL (optional)").
+				Description("Separate URL for model discovery. Leave empty to use Base URL.").
+				Placeholder("https://ai.intranet.istmocenter.com").
+				Value(&result.DiscoveryURL),
 			huh.NewSelect[string]().
 				Title("API Type").
 				Description("Model discovery method").
 				Options(apiTypeOpts...).
 				Value(&result.ApiType),
 		),
-	).WithHeight(10)
+	).WithHeight(11)
 }
 
 // NewDeleteConfirmForm creates a confirmation dialog for deleting a provider.
@@ -131,6 +137,39 @@ func NewSelectProviderForm(providers []domain.Provider, result *int64) *huh.Form
 // MapModelsResult holds the result of the model mapping form.
 type MapModelsResult struct {
 	Mappings map[string]string
+}
+
+// RegisterModelsResult holds the result of the model registration form.
+type RegisterModelsResult struct {
+	RegisteredModels []string
+}
+
+// NewRegisterModelsForm creates a multi-select form for choosing which models
+// to register in the target CLI's config file. Pre-selects the currently mapped
+// models as defaults.
+func NewRegisterModelsForm(models []domain.ProviderModel, preSelected map[string]bool, result *RegisterModelsResult) *huh.Form {
+	opts := make([]huh.Option[string], 0, len(models))
+	for _, m := range models {
+		opts = append(opts, huh.NewOption(m.ModelName, m.ModelName))
+	}
+
+	// Default selections: models that are already mapped
+	defaults := make([]string, 0, len(preSelected))
+	for _, m := range models {
+		if preSelected[m.ModelName] {
+			defaults = append(defaults, m.ModelName)
+		}
+	}
+
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Register Models").
+				Description("Select which models to include in the config file.").
+				Options(opts...).
+				Value(&result.RegisteredModels),
+		),
+	).WithHeight(10)
 }
 
 // EditCLIPathResult holds the values from the Edit CLI Path form.
@@ -245,11 +284,12 @@ func NewMapModelsForm(envVars []string, models []domain.ProviderModel) (*huh.For
 
 // EditProviderResult holds the values submitted from the Edit Provider form.
 type EditProviderResult struct {
-	Name      string
-	BaseURL   string
-	APIKey    string
-	AuthToken string
-	ApiType   string
+	Name         string
+	BaseURL      string
+	DiscoveryURL string // optional, for model discovery
+	APIKey       string
+	AuthToken    string
+	ApiType      string
 }
 
 // NewEditProviderForm creates a pre-filled form for editing an existing provider.
@@ -261,6 +301,7 @@ func NewEditProviderForm(provider domain.Provider, result *EditProviderResult) *
 	}
 	result.Name = provider.Name
 	result.BaseURL = provider.BaseURL
+	result.DiscoveryURL = provider.DiscoveryURL
 	result.APIKey = provider.APIKey
 	result.AuthToken = provider.AuthToken
 	result.ApiType = string(provider.ApiType)
@@ -268,7 +309,7 @@ func NewEditProviderForm(provider domain.Provider, result *EditProviderResult) *
 	return huh.NewForm(
 		huh.NewGroup(
 			huh.NewNote().
-				Title("Editing: " + provider.Name).
+				Title("Editing: "+provider.Name).
 				Description("Name is read-only. Update fields below."),
 			huh.NewInput().
 				Title("Base URL").
@@ -299,11 +340,16 @@ func NewEditProviderForm(provider domain.Provider, result *EditProviderResult) *
 				Description("Optional if same as API Key").
 				Value(&result.AuthToken).
 				EchoMode(huh.EchoModePassword),
+			huh.NewInput().
+				Title("Discovery URL (optional)").
+				Description("Separate URL for model discovery. Leave empty to use Base URL.").
+				Placeholder("https://ai.intranet.istmocenter.com").
+				Value(&result.DiscoveryURL),
 			huh.NewSelect[string]().
 				Title("API Type").
 				Description("Model discovery method").
 				Options(apiTypeOpts...).
 				Value(&result.ApiType),
 		),
-	).WithHeight(10)
+	).WithHeight(11)
 }

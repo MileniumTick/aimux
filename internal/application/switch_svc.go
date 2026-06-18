@@ -87,6 +87,22 @@ func (uc *SwitchUseCases) Apply(targetCLIID, providerID int64) (*domain.BackupRe
 		return nil, fmt.Errorf("mutator '%s' not registered for CLI '%s'", mutatorName, cli.Name)
 	}
 
+	// Extract _registered models from the mappings (comma-separated list) and remove
+	// the key so it doesn't interfere with env-var-to-model mapping.
+	if registeredStr, ok := mappings["_registered"]; ok && registeredStr != "" {
+		delete(mappings, "_registered")
+		parts := strings.Split(registeredStr, ",")
+		registered := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if p != "" {
+				registered = append(registered, p)
+			}
+		}
+		if len(registered) > 0 {
+			mutatorCfg["_registered_models"] = registered
+		}
+	}
+
 	// Inject model metadata for mutators that need it (pi, claude [1m] suffix, etc.)
 	models, _ := uc.providerRepo.ListModels(providerID)
 	if len(models) > 0 {

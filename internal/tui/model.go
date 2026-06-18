@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/MileniumTick/aimux/internal/application"
+	"github.com/MileniumTick/aimux/internal/domain"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
-	"github.com/MileniumTick/aimux/internal/application"
-	"github.com/MileniumTick/aimux/internal/domain"
 )
 
 type viewType int
@@ -24,9 +24,12 @@ const (
 	switchProviderView
 	switchMapModelsView
 	switchConfirmationView
+	switchRegisterModelsView
 	manageCLIView
 	editCLIPathView
 	editProviderView
+	restoreCLIView
+	restoreBackupView
 )
 
 type (
@@ -107,12 +110,14 @@ type model struct {
 	editProviderResult EditProviderResult
 	deleteConfirm      bool
 
-	switchTargetCLIID int64
-	switchProviderID  int64
-	switchEnvVars     []string
-	switchExtractFn   func() MapModelsResult
-	switchBackupPath  string
-	switchDryRun      *application.DryRunResult
+	switchTargetCLIID      int64
+	switchProviderID       int64
+	switchEnvVars          []string
+	switchExtractFn        func() MapModelsResult
+	switchRegisterResult   RegisterModelsResult
+	switchRegisteredModels []string
+	switchBackupPath       string
+	switchDryRun           *application.DryRunResult
 
 	selectedProviderID int64
 
@@ -121,8 +126,12 @@ type model struct {
 
 	loading bool
 
-	notification     string
+	notification      string
 	notificationIsMsg bool
+
+	restoreCLIName       string
+	restoreSelectedPath  string
+	restoreBackups       []application.BackupOption
 
 	updateInfo UpdateInfo
 }
@@ -482,11 +491,12 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		m.currentView = providerListView
 		name := trimSpaces(m.addProviderResult.Name)
 		baseURL := trimSpaces(m.addProviderResult.BaseURL)
+		discoveryURL := trimSpaces(m.addProviderResult.DiscoveryURL)
 		apiKey := trimSpaces(m.addProviderResult.APIKey)
 		authToken := trimSpaces(m.addProviderResult.AuthToken)
 		apiType := domain.ApiType(m.addProviderResult.ApiType)
 
-		_, err := m.providerUseCases.Add(name, baseURL, apiKey, authToken, apiType)
+		_, err := m.providerUseCases.Add(name, baseURL, discoveryURL, apiKey, authToken, apiType)
 		if err != nil {
 			return m, tea.Batch(func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }, func() tea.Msg {
 				return notificationMsg{message: fmt.Sprintf("Add failed: %s", err.Error()), isError: true}
@@ -500,11 +510,12 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		m.form = nil
 		m.currentView = providerListView
 		baseURL := trimSpaces(m.editProviderResult.BaseURL)
+		discoveryURL := trimSpaces(m.editProviderResult.DiscoveryURL)
 		apiKey := trimSpaces(m.editProviderResult.APIKey)
 		authToken := trimSpaces(m.editProviderResult.AuthToken)
 		apiType := domain.ApiType(m.editProviderResult.ApiType)
 
-		if err := m.providerUseCases.Update(m.selectedProviderID, baseURL, apiKey, authToken, apiType); err != nil {
+		if err := m.providerUseCases.Update(m.selectedProviderID, baseURL, discoveryURL, apiKey, authToken, apiType); err != nil {
 			return m, tea.Batch(func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }, func() tea.Msg {
 				return notificationMsg{message: fmt.Sprintf("Update failed: %s", err.Error()), isError: true}
 			})
@@ -593,6 +604,45 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Build pre-selected set from mapped models
+		preSelected := make(map[string]bool, len(result.Mappings))
+		for _, v := range result.Mappings {
+			if v != "" {
+				preSelected[v] = true
+			}
+		}
+
+		m.switchRegisterResult = RegisterModelsResult{}
+		m.currentView = switchRegisterModelsView
+		m.form = NewRegisterModelsForm(m.switchProviderModels, preSelected, &m.switchRegisterResult)
+		return m, m.form.Init()
+
+	case switchRegisterModelsView:
+		m.form = nil
+
+		// Update model_mappings to include _registered list
+		m.switchRegisteredModels = m.switchRegisterResult.RegisteredModels
+		if len(m.switchRegisteredModels) > 0 {
+			currentMappings, err := m.switchUseCases.GetBoundModels(m.switchTargetCLIID)
+			if err == nil {
+				// Add _registered to the stored mappings
+				updated := make(map[string]string, len(currentMappings)+1)
+				for k, v := range currentMappings {
+					updated[k] = v
+				}
+				// Store as comma-separated in a single key
+				registeredStr := ""
+				for i, r := range m.switchRegisteredModels {
+					if i > 0 {
+						registeredStr += ","
+					}
+					registeredStr += r
+				}
+				updated["_registered"] = registeredStr
+				_ = m.switchUseCases.BindProfile(m.switchTargetCLIID, m.switchProviderID, updated)
+			}
+		}
+
 		dryRun, err := m.switchUseCases.DryRun(m.switchTargetCLIID, m.switchProviderID)
 		if err != nil {
 			return m, func() tea.Msg {
@@ -644,9 +694,9 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 
 var (
 	titleStyle = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("255")).
-		Padding(0, 2)
+			Bold(true).
+			Foreground(lipgloss.Color("255")).
+			Padding(0, 2)
 
 	viewPadding = lipgloss.NewStyle().PaddingTop(2)
 
@@ -756,6 +806,8 @@ func (m *model) previousView() viewType {
 		return dashboardView
 	case switchMapModelsView:
 		return switchProviderView
+	case switchRegisterModelsView:
+		return switchMapModelsView
 	case switchProviderView:
 		return switchTargetCLIView
 	case switchTargetCLIView, switchConfirmationView:

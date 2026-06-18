@@ -61,12 +61,28 @@ func (m *OpenCodeProviderJSON) Mutate(
 		},
 	}
 
-	// Build models map from model mappings
-	models := make(map[string]any)
-	for _, val := range modelMappings {
-		if val != "" {
-			models[val] = map[string]any{"name": val}
+	// Build models map from model mappings.
+	// If _registered_models is provided, use that list (free selection);
+	// otherwise fall back to mapped model values (backward compatible).
+	modelList := make([]string, 0)
+	if registered, ok := mutatorConfig["_registered_models"].([]any); ok && len(registered) > 0 {
+		for _, r := range registered {
+			if name, ok := r.(string); ok && name != "" {
+				modelList = append(modelList, name)
+			}
 		}
+	}
+	if len(modelList) == 0 {
+		for _, val := range modelMappings {
+			if val != "" {
+				modelList = append(modelList, val)
+			}
+		}
+	}
+
+	models := make(map[string]any, len(modelList))
+	for _, name := range modelList {
+		models[name] = map[string]any{"name": name}
 	}
 	providerEntry["models"] = models
 
