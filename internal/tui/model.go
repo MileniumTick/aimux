@@ -975,9 +975,11 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 				}
 			}
 
-			m.currentView = switchAdvancedConfigView
 			m.switchModelMetadataSummary = buildMetadataSummary(registered, m.switchProviderID, m.switchUseCases)
-			return m, nil
+			// Use SwitchToViewMsg to prevent Enter key bounce from provider form
+			return m, func() tea.Msg {
+				return SwitchToViewMsg{View: switchAdvancedConfigView}
+			}
 		}
 		return m, m.form.Init()
 
@@ -1035,8 +1037,9 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		m.switchRegisteredModels = registered
 
 		m.switchModelMetadataSummary = buildMetadataSummary(registered, m.switchProviderID, m.switchUseCases)
-		m.currentView = switchAdvancedConfigView
-		return m, nil
+		return m, func() tea.Msg {
+			return SwitchToViewMsg{View: switchAdvancedConfigView}
+		}
 
 	case manageCLIView:
 		m.form = nil
