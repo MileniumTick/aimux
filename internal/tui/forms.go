@@ -164,6 +164,7 @@ func NewRegisterModelsForm(models []domain.ProviderModel, preSelected map[string
 	for _, m := range models {
 		opts = append(opts, huh.NewOption(m.ModelName, m.ModelName))
 	}
+	result.RegisteredModels = make([]string, 0, len(models))
 
 	return huh.NewForm(
 		huh.NewGroup(
@@ -173,7 +174,7 @@ func NewRegisterModelsForm(models []domain.ProviderModel, preSelected map[string
 				Options(opts...).
 				Value(&result.RegisteredModels),
 		),
-	)
+	).WithHeight(10)
 }
 
 // NewSelectModelsForm creates a multi-select to pick models for a CLI.
