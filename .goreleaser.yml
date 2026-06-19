@@ -44,5 +44,7 @@ brews:
     homepage: "https://github.com/MileniumTick/aimux"
     description: "AI Provider Multiplexer for dev CLIs"
     license: "MIT"
+    url_template: >-
+      https://github.com/MileniumTick/aimux/releases/download/{{ .Tag }}/{{ .ArtifactName }}
     test: |
       system "#{bin}/aimux version"
