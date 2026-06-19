@@ -23,8 +23,11 @@ jobs:
         with:
           node-version: "lts/*"
 
-      - name: Install GoReleaser
-        run: go install github.com/goreleaser/goreleaser@latest
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          install-only: true
 
       - name: Semantic Release
         uses: cycjimmy/semantic-release-action@v4
