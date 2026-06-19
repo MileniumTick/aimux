@@ -85,15 +85,7 @@ func SelfUpdate(currentVersion, execPath string) error {
 	tmpFile.Close()
 	resp.Body.Close()
 
-	// Step 7: extract binary from archive
-	extractedPath := filepath.Join(filepath.Dir(execPath), ".aimux_extracted_"+randomString(8))
-	defer os.Remove(extractedPath)
-
-	if err := extractBinary(tmpPath, extractedPath); err != nil {
-		return fmt.Errorf("extract binary: %w", err)
-	}
-
-	// Step 8: download and validate checksums
+	// Step 7: download checksums
 	var checksumsURL string
 	for _, asset := range release.Assets {
 		if asset.Name == "checksums.txt" {
@@ -134,9 +126,17 @@ func SelfUpdate(currentVersion, execPath string) error {
 		return fmt.Errorf("checksum not found for %s", archiveName)
 	}
 
-	// Step 9: validate checksum
-	if err := validateChecksum(extractedPath, expectedSHA); err != nil {
+	// Step 8: validate archive checksum before extraction
+	if err := validateChecksum(tmpPath, expectedSHA); err != nil {
 		return err
+	}
+
+	// Step 9: extract binary from archive
+	extractedPath := filepath.Join(filepath.Dir(execPath), ".aimux_extracted_"+randomString(8))
+	defer os.Remove(extractedPath)
+
+	if err := extractBinary(tmpPath, extractedPath); err != nil {
+		return fmt.Errorf("extract binary: %w", err)
 	}
 
 	// Step 10: atomic replace
@@ -166,7 +166,7 @@ func IsHomebrewInstall(execPath string) bool {
 
 // homebrewUpdate runs brew upgrade for the aimux tap.
 func homebrewUpdate() int {
-	cmd := exec.Command("brew", "upgrade", "jchavarriam/tap/aimux")
+	cmd := exec.Command("brew", "upgrade", "MileniumTick/tap/aimux")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
