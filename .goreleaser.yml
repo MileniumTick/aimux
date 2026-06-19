@@ -1,0 +1,48 @@
+version: 2
+project_name: aimux
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+
+archives:
+  - format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+release:
+  disable: true
+
+brews:
+  - name: aimux
+    repository:
+      owner: MileniumTick
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/MileniumTick/aimux"
+    description: "AI Provider Multiplexer for dev CLIs"
+    license: "MIT"
+    test: |
+      system "#{bin}/aimux version"

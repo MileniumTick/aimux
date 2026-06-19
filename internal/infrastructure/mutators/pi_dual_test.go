@@ -14,7 +14,6 @@ func defaultPiProvider() domain.Provider {
 		Name:    "Bifrost",
 		BaseURL: "https://bifrost.example.com/v1",
 		APIKey:  "sk-pi-test-key",
-		ApiType: domain.ApiTypeAnthropic,
 	}
 }
 
@@ -58,9 +57,9 @@ func TestPiDualJSON_WritesModelsJSON(t *testing.T) {
 	if bifrost["apiKey"] != "sk-pi-test-key" {
 		t.Errorf("expected apiKey, got %v", bifrost["apiKey"])
 	}
-	// auto-derived from provider.ApiType (Anthropic)
-	if bifrost["api"] != "anthropic-messages" {
-		t.Errorf("expected api 'anthropic-messages', got %v", bifrost["api"])
+	// Default api is now openai-completions (ApiType removed)
+	if bifrost["api"] != "openai-completions" {
+		t.Errorf("expected api 'openai-completions', got %v", bifrost["api"])
 	}
 
 	models := bifrost["models"].([]any)
@@ -139,7 +138,7 @@ func TestPiDualJSON_APIOverride(t *testing.T) {
 
 	cfg := map[string]any{
 		"provider_id": "bifrost",
-		"api":         "openai-completions",
+		"api":         "anthropic-messages",
 	}
 
 	mappings := map[string]string{"M": "m1"}
@@ -155,9 +154,9 @@ func TestPiDualJSON_APIOverride(t *testing.T) {
 
 	providers := root["providers"].(map[string]any)
 	bifrost := providers["bifrost"].(map[string]any)
-	// override wins over auto-derived "anthropic-messages"
-	if bifrost["api"] != "openai-completions" {
-		t.Errorf("expected override 'openai-completions', got %v", bifrost["api"])
+	// override wins over default "openai-completions"
+	if bifrost["api"] != "anthropic-messages" {
+		t.Errorf("expected override 'anthropic-messages', got %v", bifrost["api"])
 	}
 }
 
@@ -257,11 +256,12 @@ func TestPiDualJSON_MetadataEnrichment(t *testing.T) {
 	}
 
 	entry := models[0].(map[string]any)
-	if entry["context_window"] != float64(1_000_000) {
-		t.Errorf("expected context_window 1000000, got %v", entry["context_window"])
+	// pi uses camelCase keys: contextWindow, maxTokens
+	if entry["contextWindow"] != float64(1_000_000) {
+		t.Errorf("expected contextWindow 1000000, got %v", entry["contextWindow"])
 	}
-	if entry["max_tokens"] != float64(384_000) {
-		t.Errorf("expected max_tokens 384000, got %v", entry["max_tokens"])
+	if entry["maxTokens"] != float64(384_000) {
+		t.Errorf("expected maxTokens 384000, got %v", entry["maxTokens"])
 	}
 	if entry["reasoning"] != true {
 		t.Errorf("expected reasoning true, got %v", entry["reasoning"])

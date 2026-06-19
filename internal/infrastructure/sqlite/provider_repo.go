@@ -15,10 +15,14 @@ type ProviderRepository struct {
 }
 
 // Add inserts a new provider and returns its ID.
-func (r *ProviderRepository) Add(name, baseURL, discoveryURL, apiKey, authToken string, apiType domain.ApiType) (int64, error) {
+func (r *ProviderRepository) Add(name, baseURL, discoveryURL, apiKey, authToken string, defaultContextWindow ...int64) (int64, error) {
+	dcw := int64(0)
+	if len(defaultContextWindow) > 0 {
+		dcw = defaultContextWindow[0]
+	}
 	result, err := r.DB.Exec(
-		`INSERT INTO providers (name, base_url, discovery_url, api_key, auth_token, api_type, status) VALUES (?, ?, ?, ?, ?, ?, 'active')`,
-		name, baseURL, discoveryURL, apiKey, authToken, string(apiType),
+		`INSERT INTO providers (name, base_url, discovery_url, default_context_window, api_key, auth_token, status) VALUES (?, ?, ?, ?, ?, ?, 'active')`,
+		name, baseURL, discoveryURL, dcw, apiKey, authToken,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
@@ -37,9 +41,9 @@ func (r *ProviderRepository) Add(name, baseURL, discoveryURL, apiKey, authToken 
 func (r *ProviderRepository) Get(id int64) (domain.Provider, error) {
 	var p domain.Provider
 	err := r.DB.QueryRow(
-		`SELECT id, name, base_url, discovery_url, api_key, auth_token, api_type, status, created_at, updated_at FROM providers WHERE id = ?`,
+		`SELECT id, name, base_url, discovery_url, default_context_window, api_key, auth_token, status, created_at, updated_at FROM providers WHERE id = ?`,
 		id,
-	).Scan(&p.ID, &p.Name, &p.BaseURL, &p.DiscoveryURL, &p.APIKey, &p.AuthToken, &p.ApiType, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.Name, &p.BaseURL, &p.DiscoveryURL, &p.DefaultContextWindow, &p.APIKey, &p.AuthToken, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return p, fmt.Errorf("get provider %d: %w", id, err)
 	}
@@ -49,7 +53,7 @@ func (r *ProviderRepository) Get(id int64) (domain.Provider, error) {
 // List returns all providers ordered by name ascending.
 func (r *ProviderRepository) List() ([]domain.Provider, error) {
 	rows, err := r.DB.Query(
-		`SELECT id, name, base_url, discovery_url, api_key, auth_token, api_type, status, created_at, updated_at FROM providers ORDER BY name ASC`,
+		`SELECT id, name, base_url, discovery_url, default_context_window, api_key, auth_token, status, created_at, updated_at FROM providers ORDER BY name ASC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list providers: %w", err)
@@ -59,7 +63,7 @@ func (r *ProviderRepository) List() ([]domain.Provider, error) {
 	var providers []domain.Provider
 	for rows.Next() {
 		var p domain.Provider
-		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.DiscoveryURL, &p.APIKey, &p.AuthToken, &p.ApiType, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.DiscoveryURL, &p.DefaultContextWindow, &p.APIKey, &p.AuthToken, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan provider: %w", err)
 		}
 		providers = append(providers, p)
@@ -67,11 +71,15 @@ func (r *ProviderRepository) List() ([]domain.Provider, error) {
 	return providers, rows.Err()
 }
 
-// Update updates a provider's base_url, discovery_url, api_key, auth_token, and api_type.
-func (r *ProviderRepository) Update(id int64, baseURL, discoveryURL, apiKey, authToken string, apiType domain.ApiType) error {
+// Update updates a provider's base_url, discovery_url, default_context_window, api_key, and auth_token.
+func (r *ProviderRepository) Update(id int64, baseURL, discoveryURL, apiKey, authToken string, defaultContextWindow ...int64) error {
+	dcw := int64(0)
+	if len(defaultContextWindow) > 0 {
+		dcw = defaultContextWindow[0]
+	}
 	_, err := r.DB.Exec(
-		`UPDATE providers SET base_url = ?, discovery_url = ?, api_key = ?, auth_token = ?, api_type = ?, updated_at = datetime('now') WHERE id = ?`,
-		baseURL, discoveryURL, apiKey, authToken, string(apiType), id,
+		`UPDATE providers SET base_url = ?, discovery_url = ?, default_context_window = ?, api_key = ?, auth_token = ?, updated_at = datetime('now') WHERE id = ?`,
+		baseURL, discoveryURL, dcw, apiKey, authToken, id,
 	)
 	if err != nil {
 		return fmt.Errorf("update provider %d: %w", id, err)

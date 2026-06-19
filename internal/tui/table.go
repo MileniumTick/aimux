@@ -1,233 +1,132 @@
 package tui
 
 import (
-	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/MileniumTick/aimux/internal/domain"
+	"github.com/charmbracelet/lipgloss"
 )
 
-// RenderTable renders the dashboard status table, no help hints in body.
-func RenderTable(providers []domain.Provider, activeMultiplexes []domain.ActiveMultiplex, targetCLIs []domain.TargetCLI, termWidth int) string {
-	activeByCLI := make(map[int64]domain.ActiveMultiplex)
-	for _, am := range activeMultiplexes {
-		activeByCLI[am.TargetCLIID] = am
-	}
-
-	availWidth := termWidth
-	if availWidth < 72 {
-		availWidth = 72
-	}
-
-	cliW := availWidth * 28 / 100
-	provW := availWidth * 28 / 100
-	statW := 10
-	modW := availWidth - cliW - provW - statW
-
-	minCLI, minProv, minStat, minMod := 14, 10, 6, 12
-	if cliW < minCLI {
-		cliW = minCLI
-	}
-	if provW < minProv {
-		provW = minProv
-	}
-	if statW < minStat {
-		statW = minStat
-	}
-	if modW < minMod {
-		modW = minMod
-	}
-	total := cliW + provW + modW + statW
-	if total > availWidth {
-		modW -= total - availWidth
-		if modW < minMod {
-			modW = minMod
-		}
-	}
-
-	var b strings.Builder
-
-	// Header
-	b.WriteString(Row(
-		Col{Style: headerStyle, Text: "CLI", Width: cliW},
-		Col{Style: headerStyle, Text: "Provider", Width: provW},
-		Col{Style: headerStyle, Text: "Models", Width: modW},
-		Col{Style: headerStyle, Text: "Status", Width: statW},
-	))
-	b.WriteString("\n")
-	b.WriteString(Divider(cliW, provW, modW, statW))
-
-	if len(targetCLIs) == 0 {
-		b.WriteString("\n")
-		b.WriteString(RowAlt(0,
-			Col{Style: rowEvenStyle, Text: "---", Width: cliW},
-			Col{Style: rowEvenStyle, Text: "---", Width: provW},
-			Col{Style: rowEvenStyle, Text: "---", Width: modW},
-			Col{Style: inactiveStyle, Text: "INACTIVE", Width: statW},
-		))
-		b.WriteString("\n  ")
-		b.WriteString(EmptyState("", "No CLIs configured — add one in Manage CLIs", availWidth))
-		return b.String()
-	}
-
-	for i, cli := range targetCLIs {
-		b.WriteString("\n")
-		am, hasActive := activeByCLI[cli.ID]
-		if hasActive {
-			mappings := make(map[string]string)
-			modelsStr := "---"
-			if err := json.Unmarshal([]byte(am.ModelMappings), &mappings); err == nil && len(mappings) > 0 {
-				modelIDs := make([]string, 0, len(mappings))
-				for _, v := range mappings {
-					if v != "" {
-						modelIDs = append(modelIDs, v)
-					}
-				}
-				if len(modelIDs) > 0 {
-					modelsStr = strings.Join(modelIDs, ", ")
-				}
-			}
-
-			providerName := am.ProviderName
-			if providerName == "" {
-				providerName = "---"
-			}
-
-			b.WriteString(RowAlt(i,
-				Col{Style: rowEvenStyle, Text: cli.Name, Width: cliW},
-				Col{Style: rowEvenStyle, Text: providerName, Width: provW},
-				Col{Style: rowEvenStyle, Text: truncate(modelsStr, modW-1), Width: modW},
-				Col{Style: activeStyle, Text: "ACTIVE", Width: statW},
-			))
-		} else {
-			b.WriteString(RowAlt(i,
-				Col{Style: rowEvenStyle, Text: cli.Name, Width: cliW},
-				Col{Style: rowEvenStyle, Text: "---", Width: provW},
-				Col{Style: rowEvenStyle, Text: "---", Width: modW},
-				Col{Style: inactiveStyle, Text: "INACTIVE", Width: statW},
-			))
-		}
-	}
-
-	return b.String()
-}
-
-// RenderProviderList renders the provider management table, no hints in body.
-func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth int) string {
+// RenderProviderList renders the provider management list with card-based styling.
+// Each provider is displayed as a bordered card with status badge, URL, and model count.
+func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth int, allModels []domain.ProviderModel, activeMultiplexes []domain.ActiveMultiplex) string {
 	if len(providers) == 0 {
-		return "  " + EmptyState("", "No providers configured. Press 'a' to add one.", termWidth)
+		empty := lipgloss.NewStyle().
+			Foreground(aimuxT.TextMuted).
+			Padding(1, 2).
+			Render("No providers configured. Press 'a' to add one.")
+		return aimuxT.Card.Copy().Width(termWidth - 8).Render(empty)
 	}
 
-	nameW := 18
-	urlW := 30
-	modelsW := 14
-	statW := 8
-
-	if termWidth > 0 {
-		availWidth := termWidth - 4
-		minName := 10
-		minURL := 12
-		minStat := 6
-		minModels := 8
-		reserved := minName + minURL + minStat
-		modAvail := availWidth - reserved
-		if modAvail > minModels {
-			nameW = minName
-			urlW = availWidth - minName - minStat - minModels
-			modelsW = modAvail / 2
-			statW = minStat
-			if urlW < minURL {
-				urlW = minURL
-			}
-		}
-	}
-	dispW := termWidth
-	if dispW < 2 {
-		dispW = 72
-	}
-	totalW := nameW + urlW + modelsW + statW
-	if totalW > dispW-2 {
-		overflow := totalW - (dispW - 2)
-		urlW -= overflow
-		if urlW < 12 {
-			urlW = 12
-		}
+	// Build model count per provider
+	modelCounts := make(map[int64]int)
+	for _, m := range allModels {
+		modelCounts[m.ProviderID]++
 	}
 
-	var b strings.Builder
+	// Build set of in-use provider IDs
+	inUse := make(map[int64]bool)
+	for _, am := range activeMultiplexes {
+		inUse[am.ProviderID] = true
+	}
 
-	// Header
-	b.WriteString(Row(
-		Col{Style: headerStyle, Text: "Name", Width: nameW},
-		Col{Style: headerStyle, Text: "Base URL", Width: urlW},
-		Col{Style: headerStyle, Text: "Models", Width: modelsW},
-		Col{Style: headerStyle, Text: "Status", Width: statW},
-	))
-	b.WriteString("\n")
-	b.WriteString(Divider(nameW, urlW, modelsW, statW))
+	// Card width: terminal width minus outer padding
+	cardW := termWidth - 8
+	if cardW < 40 {
+		cardW = 40
+	}
+	if cardW > 80 {
+		cardW = 80
+	}
 
-	for i, p := range providers {
-		b.WriteString("\n")
-		name := p.Name
-		if p.ID == selectedID {
-			name = "▸ " + name
-		} else {
-			name = "  " + name
-		}
+	// Max text width within card: cardW minus border(2) minus padding(2)
+	maxTextW := cardW - 4
+	if maxTextW < 10 {
+		maxTextW = 10
+	}
 
-		baseURL := p.BaseURL
-		urlDisplayLen := urlW - 4
-		if urlDisplayLen < 0 {
-			urlDisplayLen = 0
-		}
-		if len(baseURL) > urlDisplayLen && urlDisplayLen > 3 {
-			baseURL = baseURL[:urlDisplayLen-3] + "..."
-		} else if len(baseURL) > urlDisplayLen {
-			baseURL = baseURL[:urlDisplayLen]
-		}
-		baseURL = "  " + baseURL
+	var cards []string
 
-		status := "OK"
-		statusRender := activeStyle
+	for _, p := range providers {
+		selected := p.ID == selectedID
+
+		// Status badge
+		var statusBadge string
 		if p.Status == "error" {
-			status = "ERROR"
-			statusRender = errStyle
-		}
-
-		modelsStatus := "---"
-		if p.Status == "active" {
-			modelsStatus = "Yes"
-		} else if p.Status == "error" {
-			modelsStatus = "Failed"
-		}
-
-		if p.ID == selectedID {
-			sel := selectedStyle
-			if i%2 == 1 {
-				sel = oddSelectedStyle
-			}
-			b.WriteString(RowPadded(sel,
-				Col{Style: sel, Text: name, Width: nameW},
-				Col{Style: sel, Text: baseURL, Width: urlW},
-				Col{Style: sel, Text: modelsStatus, Width: modelsW},
-				Col{Style: sel, Text: status, Width: statW},
-			))
+			statusBadge = lipgloss.NewStyle().
+				Foreground(aimuxT.Red).
+				Bold(true).
+				Render(" ERROR ")
 		} else {
-			b.WriteString(RowAlt(i,
-				Col{Style: rowEvenStyle, Text: name, Width: nameW},
-				Col{Style: rowEvenStyle, Text: baseURL, Width: urlW},
-				Col{Style: rowEvenStyle, Text: modelsStatus, Width: modelsW},
-				Col{Style: statusRender, Text: status, Width: statW},
-			))
+			statusBadge = lipgloss.NewStyle().
+				Foreground(aimuxT.Green).
+				Bold(true).
+				Render(" OK ")
 		}
+
+		// In-use badge
+		var useBadge string
+		if inUse[p.ID] {
+			useBadge = lipgloss.NewStyle().
+				Foreground(aimuxT.Accent).
+				Render("● in use")
+		}
+
+		// Selection indicator
+		var selIndicator string
+		if selected {
+			selIndicator = lipgloss.NewStyle().
+				Foreground(aimuxT.Accent).
+				Bold(true).
+				Render("▸ ")
+		} else {
+			selIndicator = "  "
+		}
+
+		// Name line: indicator + truncated name + status + in-use
+		nameStyle := aimuxT.ItemTitle
+		// Leave ~20 cells for badges (OK + ● in use) and spacing
+		nameMax := maxTextW - 20
+		if nameMax < 8 {
+			nameMax = 8
+		}
+		displayName := truncateText(p.Name, nameMax)
+		nameLine := selIndicator + nameStyle.Render(displayName) + "  " + statusBadge
+		if useBadge != "" {
+			nameLine += "  " + useBadge
+		}
+
+		// URL line — ANSI-safe truncation
+		urlDisplay := truncateText(p.BaseURL, maxTextW-4)
+		urlStyle := aimuxT.ItemDesc
+		urlLine := truncateTextStyle("  "+urlDisplay, urlStyle, maxTextW)
+
+		// Model count line
+		modelInfo := fmt.Sprintf("  %d models", modelCounts[p.ID])
+		modelLine := urlStyle.Render(modelInfo)
+
+		// Build card content
+		cardContent := lipgloss.JoinVertical(lipgloss.Left,
+			nameLine,
+			urlLine,
+			modelLine,
+		)
+
+		// Wrap in bordered card; selected gets accent border + ▸ indicator
+		cardStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(aimuxT.Border).
+			Padding(0, 1).
+			Width(cardW)
+
+		if selected {
+			cardStyle = cardStyle.BorderForeground(aimuxT.Accent)
+		}
+
+		cards = append(cards, cardStyle.Render(cardContent))
 	}
 
-	return b.String()
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-1] + "…"
+	// Join cards vertically with spacing
+	return strings.Join(cards, "\n")
 }

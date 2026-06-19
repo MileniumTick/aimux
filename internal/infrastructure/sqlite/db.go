@@ -53,7 +53,6 @@ func RunMigrations(db *sql.DB) error {
 			discovery_url TEXT NOT NULL DEFAULT '',
 			api_key TEXT NOT NULL DEFAULT '',
 			auth_token TEXT NOT NULL DEFAULT '',
-			api_type TEXT NOT NULL DEFAULT 'openai',
 			status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'error')),
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
 			updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -127,19 +126,10 @@ func MigrationAddDiscoveryURLColumn(db *sql.DB) error {
 	return nil
 }
 
-// MigrationAddApiTypeColumn adds the api_type column to providers.
-// Idempotent: checks if column exists before altering.
-func MigrationAddApiTypeColumn(db *sql.DB) error {
-	exists, err := columnExists(db, "providers", "api_type")
-	if err != nil {
-		return fmt.Errorf("check api_type column: %w", err)
-	}
-	if exists {
-		return nil
-	}
-	if _, err := db.Exec(`ALTER TABLE providers ADD COLUMN api_type TEXT NOT NULL DEFAULT 'openai'`); err != nil {
-		return fmt.Errorf("add api_type column migration: %w", err)
-	}
+// MigrationDropApiTypeColumn is a no-op that keeps existing databases working.
+// api_type was removed from the schema and code — old databases still have the
+// column but it's never read or written.
+func MigrationDropApiTypeColumn(db *sql.DB) error {
 	return nil
 }
 
@@ -182,6 +172,98 @@ func columnExists(db *sql.DB, table, column string) (bool, error) {
 	return false, rows.Err()
 }
 
+// MigrationRemoveOpenCodeNpm removes the hardcoded npm override from the
+// opencode CLI's mutator_config. The npm package is now derived dynamically
+// from the provider's API type (openai-compatible).
+// Idempotent: only affects rows that still have the old npm value.
+func MigrationRemoveOpenCodeNpm(db *sql.DB) error {
+	_, err := db.Exec(`
+		UPDATE target_clis
+		SET mutator_config = '{"provider_id":"custom"}'
+		WHERE name = 'opencode'
+		AND mutator_config = '{"provider_id":"custom","npm":"@ai-sdk/openai-compatible"}'
+	`)
+	if err != nil {
+		return fmt.Errorf("remove opencode npm migration: %w", err)
+	}
+	return nil
+}
+
+// MigrationMultiProvider changes active_multiplex from single-row PK to
+// composite (target_cli_id, provider_id) PK so a CLI can bind multiple providers.
+// Idempotent: checks if the table already uses the new schema.
+func MigrationMultiProvider(db *sql.DB) error {
+	hasID, err := columnExists(db, "active_multiplex", "id")
+	if err != nil {
+		return err
+	}
+	if hasID {
+		return nil // already migrated
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Create new table with composite PK
+	if _, err := tx.Exec(`
+		CREATE TABLE active_multiplex_new (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			target_cli_id INTEGER NOT NULL REFERENCES target_clis(id) ON DELETE CASCADE,
+			provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+			model_mappings TEXT NOT NULL,
+			activated_at TEXT NOT NULL DEFAULT (datetime('now')),
+			UNIQUE(target_cli_id, provider_id)
+		)
+	`); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`
+		INSERT INTO active_multiplex_new (target_cli_id, provider_id, model_mappings, activated_at)
+		SELECT target_cli_id, provider_id, model_mappings, activated_at FROM active_multiplex
+	`); err != nil {
+		return err
+	}
+
+	if _, err := tx.Exec(`DROP TABLE active_multiplex`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE active_multiplex_new RENAME TO active_multiplex`); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// MigrationAddDefaultContextWindow adds default_context_window column to providers.
+// Idempotent: checks if column exists before altering.
+func MigrationAddDefaultContextWindow(db *sql.DB) error {
+	exists, err := columnExists(db, "providers", "default_context_window")
+	if err != nil {
+		return fmt.Errorf("check default_context_window column: %w", err)
+	}
+	if exists {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE providers ADD COLUMN default_context_window INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("add default_context_window column migration: %w", err)
+	}
+	return nil
+}
+
+// MigrationCopilotShellProfile updates the github-copilot target CLI row to use
+// the new shell-profile mutator instead of the deprecated copilot-env-file.
+func MigrationCopilotShellProfile(db *sql.DB) error {
+	_, err := db.Exec(`UPDATE target_clis SET mutator = 'copilot-shell-profile', config_path = '' WHERE name = 'github-copilot' AND mutator = 'copilot-env-file'`)
+	if err != nil {
+		return fmt.Errorf("migrate copilot to shell profile: %w", err)
+	}
+	return nil
+}
+
 // CreateIndexes creates indexes if they do not exist.
 func CreateIndexes(db *sql.DB) error {
 	statements := []string{
@@ -216,7 +298,7 @@ func SeedTargetCLIs(db *sql.DB) error {
 			"~/.config/opencode/config.json",
 			`["OPENCODE_MODEL","OPENCODE_FAST_MODEL"]`,
 			"opencode-provider-json",
-			`{"provider_id":"custom","npm":"@ai-sdk/openai-compatible"}`,
+			`{"provider_id":"custom"}`,
 		},
 		{
 			"codex",
@@ -227,9 +309,9 @@ func SeedTargetCLIs(db *sql.DB) error {
 		},
 		{
 			"github-copilot",
-			"~/.config/copilot/.env",
+			"", // shell profile auto-detected at runtime — no config path
 			`["COPILOT_MODEL"]`,
-			"copilot-env-file",
+			"copilot-shell-profile",
 			"{}",
 		},
 		{

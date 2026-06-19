@@ -29,6 +29,15 @@ func setupTestDB(t *testing.T) *sql.DB {
 	if err := sqlite.MigrationAddModelMetadataColumn(db); err != nil {
 		t.Fatalf("failed to add metadata column: %v", err)
 	}
+	if err := sqlite.MigrationMultiProvider(db); err != nil {
+		t.Fatalf("failed to migrate multi-provider: %v", err)
+	}
+	if err := sqlite.MigrationRemoveOpenCodeNpm(db); err != nil {
+		t.Fatalf("failed to migrate remove opencode npm: %v", err)
+	}
+	if err := sqlite.MigrationAddDefaultContextWindow(db); err != nil {
+		t.Fatalf("failed to add default_context_window: %v", err)
+	}
 	if err := sqlite.CreateIndexes(db); err != nil {
 		t.Fatalf("failed to create indexes: %v", err)
 	}
@@ -77,7 +86,7 @@ func setupSwitchHarness(t *testing.T) *switchTestHarness {
 
 func addTestProvider(t *testing.T, uc *SwitchUseCases, name, baseURL string) int64 {
 	t.Helper()
-	id, err := uc.providerRepo.Add(name, baseURL, "", "test-api-key", "test-auth-token", domain.ApiTypeOpenAI)
+	id, err := uc.providerRepo.Add(name, baseURL, "", "test-api-key", "test-auth-token")
 	if err != nil {
 		t.Fatalf("Add provider failed: %v", err)
 	}

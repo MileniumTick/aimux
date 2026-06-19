@@ -19,11 +19,20 @@ import (
 
 // version is the aimux binary version. Override at build time with
 // -ldflags "-X main.version=x.y.z". Defaults to a dev marker.
-var version = "0.2.0"
+var version = "dev"
 
 func main() {
+	closeLog, err := application.SetupLogFile()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not set up log file: %v\n", err)
+	}
+	if closeLog != nil {
+		defer closeLog()
+	}
+
 	db, cleanup, err := setupDB()
 	if err != nil {
+		log.Printf("database setup failed: %v", err)
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -37,7 +46,7 @@ func main() {
 		"claude-settings-json":   &mutators.ClaudeSettingsJSON{},
 		"opencode-provider-json": &mutators.OpenCodeProviderJSON{},
 		"codex-config-toml":      &mutators.CodexConfigTOML{},
-		"copilot-env-file":       &mutators.CopilotEnvFile{},
+		"copilot-shell-profile":  &mutators.CopilotShellProfile{},
 		"pi-dual-json":           &mutators.PiDualJSON{},
 	}
 
@@ -81,9 +90,12 @@ func setupDB() (db *sql.DB, cleanup func(), err error) {
 	for _, step := range []func(*sql.DB) error{
 		sqlite2.RunMigrations,
 		sqlite2.MigrationAddMutatorColumns,
-		sqlite2.MigrationAddApiTypeColumn,
+		sqlite2.MigrationDropApiTypeColumn,
 		sqlite2.MigrationAddModelMetadataColumn,
 		sqlite2.MigrationAddDiscoveryURLColumn,
+		sqlite2.MigrationMultiProvider,
+		sqlite2.MigrationRemoveOpenCodeNpm,
+		sqlite2.MigrationAddDefaultContextWindow,
 		sqlite2.CreateIndexes,
 		sqlite2.SeedTargetCLIs,
 	} {
@@ -97,7 +109,7 @@ func setupDB() (db *sql.DB, cleanup func(), err error) {
 }
 
 func runTUI(providerUseCases *application.ProviderUseCases, switchUseCases *application.SwitchUseCases) {
-	model := tui.NewModel(providerUseCases, switchUseCases)
+	model := tui.NewModel(providerUseCases, switchUseCases, version)
 	program := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := program.Run(); err != nil {
 		log.Fatalf("Error running program: %v", err)
@@ -152,7 +164,15 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 			if len(clis) > 0 {
 				fmt.Println("\nAvailable CLIs:")
 				for _, c := range clis {
-					fmt.Printf("  %s  (%s)\n", c.Name, c.ConfigPath)
+					path := c.ConfigPath
+					if path == "" {
+						if c.Mutator == "copilot-shell-profile" {
+							path = "shell profile"
+						} else {
+							path = "auto-detect"
+						}
+					}
+					fmt.Printf("  %s  (%s)\n", c.Name, path)
 				}
 			}
 			return

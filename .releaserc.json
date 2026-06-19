@@ -1,0 +1,19 @@
+{
+  "branches": ["main"],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    ["@semantic-release/exec", {
+      "publishCmd": "goreleaser release --clean"
+    }],
+    ["@semantic-release/github", {
+      "assets": [
+        {"path": "dist/aimux_*_darwin_amd64.tar.gz"},
+        {"path": "dist/aimux_*_darwin_arm64.tar.gz"},
+        {"path": "dist/aimux_*_linux_amd64.tar.gz"},
+        {"path": "dist/aimux_*_linux_arm64.tar.gz"},
+        {"path": "dist/checksums.txt"}
+      ]
+    }]
+  ]
+}

@@ -2,6 +2,8 @@ package application
 
 import (
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,9 +41,8 @@ func ExpandTilde(path string) (string, error) {
 	return filepath.Clean(path), nil
 }
 
-// ResolveConfigPath returns the resolved path for the aimux SQLite database,
-// ensuring the config directory exists.
-func ResolveConfigPath() (string, error) {
+// ResolveConfigDir returns the aimux config directory.
+func ResolveConfigDir() (string, error) {
 	home, err := getHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
@@ -52,7 +53,38 @@ func ResolveConfigPath() (string, error) {
 		return "", fmt.Errorf("create config directory: %w", err)
 	}
 
+	return configDir, nil
+}
+
+// ResolveConfigPath returns the resolved path for the aimux SQLite database.
+func ResolveConfigPath() (string, error) {
+	configDir, err := ResolveConfigDir()
+	if err != nil {
+		return "", err
+	}
 	return filepath.Join(configDir, "matrix.db"), nil
+}
+
+// SetupLogFile opens a log file in the config directory and sets the stdlib
+// log package to write there with timestamps. Errors go to both stderr and
+// the log file. Call once at startup.
+func SetupLogFile() (func(), error) {
+	configDir, err := ResolveConfigDir()
+	if err != nil {
+		return nil, err
+	}
+
+	logPath := filepath.Join(configDir, "aimux.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open log file: %w", err)
+	}
+
+	// Write to both stderr and log file
+	log.SetOutput(io.MultiWriter(os.Stderr, f))
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+
+	return func() { f.Close() }, nil
 }
 
 // ResolveTargetConfigPath resolves a stored config path for a target CLI.

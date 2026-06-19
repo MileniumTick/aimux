@@ -7,6 +7,7 @@ import (
 
 	"github.com/MileniumTick/aimux/internal/domain"
 	"github.com/MileniumTick/aimux/internal/infrastructure/config"
+	"github.com/MileniumTick/aimux/internal/infrastructure/mutators"
 )
 
 // SwitchUseCases handles profile switching and config mutation business logic.
@@ -32,42 +33,47 @@ func NewSwitchUseCases(
 	}
 }
 
-// Apply activates a profile and mutates the target CLI's config file.
+// Apply activates all bound providers and mutates the target CLI's config file.
+// For multi-provider CLIs (pi, OpenCode), each provider is applied separately —
+// the mutator reads the existing config and adds/replaces its provider entry.
 func (uc *SwitchUseCases) Apply(targetCLIID, providerID int64) (*domain.BackupResult, error) {
-	// Get provider for API key and config
-	provider, err := uc.providerRepo.Get(providerID)
-	if err != nil {
-		return nil, fmt.Errorf("get provider: %w", err)
-	}
-
-	// Get target CLI with mutator info
 	cli, err := uc.cliRepo.Get(targetCLIID)
 	if err != nil {
 		return nil, fmt.Errorf("get target cli: %w", err)
 	}
 
-	// Get active multiplex for model mappings
-	activeMX, err := uc.multiplexRepo.GetActive(targetCLIID)
+	// Collect all active multiplexes for this CLI (supports multi-provider)
+	allMux, err := uc.multiplexRepo.ListForCLI(targetCLIID)
 	if err != nil {
-		return nil, fmt.Errorf("get active multiplex: %w", err)
+		return nil, fmt.Errorf("list multiplexes for CLI: %w", err)
 	}
-	if activeMX.TargetCLIID == 0 {
+	if len(allMux) == 0 {
 		return nil, fmt.Errorf("no active multiplex for target CLI %d", targetCLIID)
 	}
 
-	// Parse model mappings JSON
-	mappings := make(map[string]string)
-	if err := json.Unmarshal([]byte(activeMX.ModelMappings), &mappings); err != nil {
-		return nil, fmt.Errorf("parse model mappings: %w", err)
+	// If a specific providerID was requested, filter to that one;
+	// otherwise apply all bound providers.
+	if providerID != 0 {
+		filtered := make([]domain.ActiveMultiplex, 0, 1)
+		for _, m := range allMux {
+			if m.ProviderID == providerID {
+				filtered = append(filtered, m)
+				break
+			}
+		}
+		if len(filtered) == 0 {
+			return nil, fmt.Errorf("provider %d not bound to CLI %s", providerID, cli.Name)
+		}
+		allMux = filtered
 	}
 
-	// Resolve config path
+	// Resolve config path once (shared across all providers)
 	resolvedPath, err := ResolveTargetConfigPath(cli.ConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("resolve config path: %w", err)
 	}
 
-	// Parse mutator_config JSON
+	// Parse mutator_config JSON once
 	mutatorCfg := make(map[string]any)
 	if cli.MutatorConfig != "" && cli.MutatorConfig != "{}" {
 		if err := json.Unmarshal([]byte(cli.MutatorConfig), &mutatorCfg); err != nil {
@@ -87,37 +93,87 @@ func (uc *SwitchUseCases) Apply(targetCLIID, providerID int64) (*domain.BackupRe
 		return nil, fmt.Errorf("mutator '%s' not registered for CLI '%s'", mutatorName, cli.Name)
 	}
 
-	// Extract _registered models from the mappings (comma-separated list) and remove
-	// the key so it doesn't interfere with env-var-to-model mapping.
-	if registeredStr, ok := mappings["_registered"]; ok && registeredStr != "" {
-		delete(mappings, "_registered")
-		parts := strings.Split(registeredStr, ",")
-		registered := make([]string, 0, len(parts))
-		for _, p := range parts {
-			if p != "" {
-				registered = append(registered, p)
+	// Apply each binding — mutators are idempotent, so multiple calls are safe.
+	// pi/OpenCode mutators read-modify-write, each call adds/replaces its own provider entry.
+	// The first call clears the provider map so deleted bindings don't leave stale entries.
+	var lastResult *domain.BackupResult
+	for i, mux := range allMux {
+		// Get provider
+		provider, err := uc.providerRepo.Get(mux.ProviderID)
+		if err != nil {
+			return nil, fmt.Errorf("get provider %d: %w", mux.ProviderID, err)
+		}
+
+		// Parse model mappings JSON
+		mappings := make(map[string]string)
+		if err := json.Unmarshal([]byte(mux.ModelMappings), &mappings); err != nil {
+			return nil, fmt.Errorf("parse model mappings: %w", err)
+		}
+
+		// Per-provider mutator config (clone to avoid cross-contamination)
+		cfg := make(map[string]any, len(mutatorCfg)+2)
+		for k, v := range mutatorCfg {
+			cfg[k] = v
+		}
+
+		// For pi/OpenCode mutators, use provider name as the entry key so each
+		// binding gets its own entry. For env-mapping CLIs (Claude, Codex), keep
+		// the original provider_id since they use it for env key names.
+		if cli.Mutator == "pi-dual-json" || cli.Mutator == "opencode-provider-json" {
+			cfg["provider_id"] = strings.ToLower(strings.ReplaceAll(provider.Name, " ", "-"))
+		}
+
+		// First binding clears the provider map so deleted bindings don't leave
+		// stale entries in the config file.
+		if i == 0 {
+			cfg["_clear_providers"] = true
+		}
+
+		// Extract _registered models from mappings
+		if registeredStr, ok := mappings["_registered"]; ok && registeredStr != "" {
+			parts := strings.Split(registeredStr, ",")
+			registered := make([]string, 0, len(parts))
+			for _, p := range parts {
+				if p != "" {
+					registered = append(registered, p)
+				}
+			}
+			if len(registered) > 0 {
+				cfg["_registered_models"] = registered
+			}
+			delete(mappings, "_registered")
+		}
+
+		// Inject per-provider model metadata
+		models, _ := uc.providerRepo.ListModels(mux.ProviderID)
+		if len(models) > 0 {
+			modelMeta := make(map[string]any)
+			for _, m := range models {
+				if len(m.Metadata) > 0 {
+					modelMeta[m.ModelName] = map[string]any(m.Metadata)
+				} else if provider.DefaultContextWindow > 0 {
+					// Fallback: model sin metadata pero provider tiene default
+					modelMeta[m.ModelName] = map[string]any(domain.ModelMetadata{
+						domain.MetaContextWindow: provider.DefaultContextWindow,
+						domain.MetaContextSuffix: config.ContextSuffixForWindow(provider.DefaultContextWindow),
+					})
+				}
+			}
+			if len(modelMeta) > 0 {
+				cfg["_model_metadata"] = modelMeta
 			}
 		}
-		if len(registered) > 0 {
-			mutatorCfg["_registered_models"] = registered
+
+		result, err := mutator.Mutate(resolvedPath, mappings, provider, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("apply provider %s: %w", provider.Name, err)
+		}
+		if result != nil {
+			lastResult = result
 		}
 	}
 
-	// Inject model metadata for mutators that need it (pi, claude [1m] suffix, etc.)
-	models, _ := uc.providerRepo.ListModels(providerID)
-	if len(models) > 0 {
-		modelMeta := make(map[string]any)
-		for _, m := range models {
-			if len(m.Metadata) > 0 {
-				modelMeta[m.ModelName] = m.Metadata
-			}
-		}
-		if len(modelMeta) > 0 {
-			mutatorCfg["_model_metadata"] = modelMeta
-		}
-	}
-
-	return mutator.Mutate(resolvedPath, mappings, provider, mutatorCfg)
+	return lastResult, nil
 }
 
 // DryRunResult holds the information about what Apply would do without executing it.
@@ -134,34 +190,43 @@ func (uc *SwitchUseCases) DryRun(targetCLIID, providerID int64) (*DryRunResult, 
 		return nil, fmt.Errorf("get target cli: %w", err)
 	}
 
-	provider, err := uc.providerRepo.Get(providerID)
-	if err != nil {
-		return nil, fmt.Errorf("get provider: %w", err)
-	}
-
-	activeMX, err := uc.multiplexRepo.GetActive(targetCLIID)
-	if err != nil {
-		return nil, fmt.Errorf("get active multiplex: %w", err)
-	}
-	if activeMX.TargetCLIID == 0 {
+	allMux, err := uc.multiplexRepo.ListForCLI(targetCLIID)
+	if err != nil || len(allMux) == 0 {
 		return nil, fmt.Errorf("no active multiplex for target CLI %d", targetCLIID)
 	}
 
-	mappings := make(map[string]string)
-	if err := json.Unmarshal([]byte(activeMX.ModelMappings), &mappings); err != nil {
-		return nil, fmt.Errorf("parse model mappings: %w", err)
+	// Collect all env vars from all bindings
+	allMappings := make(map[string]string)
+	for _, mux := range allMux {
+		m := make(map[string]string)
+		if err := json.Unmarshal([]byte(mux.ModelMappings), &m); err != nil {
+			return nil, fmt.Errorf("parse model mappings: %w", err)
+		}
+		for k, v := range m {
+			allMappings[k] = v
+		}
 	}
 
-	resolvedPath, err := ResolveTargetConfigPath(cli.ConfigPath)
-	if err != nil {
-		return nil, fmt.Errorf("resolve config path: %w", err)
+	// For CLIs with auto-detected paths (copilot-shell-profile), show the
+	// detected shell profile path instead of an empty config path.
+	resolvedPath := cli.ConfigPath
+	if resolvedPath == "" {
+		resolvedPath = mutators.ShellProfilePath()
+		if resolvedPath == "" {
+			resolvedPath = "(shell profile — auto-detected)"
+		}
+	} else {
+		var rErr error
+		resolvedPath, rErr = ResolveTargetConfigPath(cli.ConfigPath)
+		if rErr != nil {
+			return nil, fmt.Errorf("resolve config path: %w", rErr)
+		}
 	}
 
-	_ = provider // provider is used by the mutator, not needed for dry-run display
 	return &DryRunResult{
 		CLIName:    cli.Name,
 		ConfigPath: resolvedPath,
-		EnvVars:    mappings,
+		EnvVars:    allMappings,
 	}, nil
 }
 
@@ -186,10 +251,7 @@ func (uc *SwitchUseCases) GetActiveForCLI(targetCLIID int64) (*domain.ActiveMult
 	if err != nil {
 		return nil, err
 	}
-	if am.TargetCLIID == 0 {
-		return nil, nil
-	}
-	return &am, nil
+	return am, nil
 }
 
 // BindProfile validates and stores a profile binding.
@@ -223,8 +285,12 @@ func (uc *SwitchUseCases) BindProfile(targetCLIID, providerID int64, mappings ma
 		knownSet[v] = true
 	}
 
-	// Validate all mapping keys are in the known set
+	// Validate all mapping keys are in the known set.
+	// Keys starting with _ are metadata (like _registered) and bypass env var validation.
 	for key := range mappings {
+		if strings.HasPrefix(key, "_") {
+			continue
+		}
 		if !knownSet[key] {
 			return fmt.Errorf("unknown env var '%s' for target CLI '%s'", key, targetCLI.Name)
 		}
@@ -251,6 +317,9 @@ func (uc *SwitchUseCases) BindProfile(targetCLIID, providerID int64, mappings ma
 
 	// Validate each non-empty model ID exists in provider_models
 	for key, modelName := range mappings {
+		if strings.HasPrefix(key, "_") {
+			continue // metadata keys like _registered store lists, not model names
+		}
 		if modelName != "" && !modelSet[modelName] {
 			return fmt.Errorf("model '%s' not found for this provider (env var: %s)", modelName, key)
 		}
@@ -270,14 +339,70 @@ func (uc *SwitchUseCases) BindProfile(targetCLIID, providerID int64, mappings ma
 	return nil
 }
 
+// ListBindingsForCLI returns all active multiplex rows for a given CLI.
+func (uc *SwitchUseCases) ListBindingsForCLI(targetCLIID int64) ([]domain.ActiveMultiplex, error) {
+	return uc.multiplexRepo.ListForCLI(targetCLIID)
+}
+
+// RemoveBinding removes a specific provider binding for a CLI.
+func (uc *SwitchUseCases) RemoveBinding(targetCLIID, providerID int64) error {
+	all, err := uc.multiplexRepo.ListForCLI(targetCLIID)
+	if err != nil {
+		return err
+	}
+	for _, b := range all {
+		if b.ProviderID == providerID {
+			return uc.multiplexRepo.ClearBinding(targetCLIID, providerID)
+		}
+	}
+	return fmt.Errorf("binding for provider %d not found", providerID)
+}
+
+// ClearCLIConfig removes all custom provider entries from the config file
+// without wiping other settings. For copilot-shell-profile, removes the
+// managed env var block from the user's shell profile.
+func (uc *SwitchUseCases) ClearCLIConfig(targetCLIID int64) error {
+	cli, err := uc.cliRepo.Get(targetCLIID)
+	if err != nil {
+		return fmt.Errorf("get cli: %w", err)
+	}
+
+	resolvedPath, err := ResolveTargetConfigPath(cli.ConfigPath)
+	if err != nil {
+		return fmt.Errorf("resolve path: %w", err)
+	}
+
+	// Read existing config, clear only the provider map, write back
+	root, err := config.ReadJSONWithLock(resolvedPath)
+	if err != nil {
+		root = make(map[string]any)
+	}
+
+	switch cli.Mutator {
+	case "pi-dual-json":
+		root["providers"] = map[string]any{}
+	case "opencode-provider-json":
+		root["provider"] = map[string]any{}
+	case "copilot-shell-profile":
+		// Remove the aimux-managed block from the user's shell profile
+		if err := mutators.RemoveShellEnvBlock(); err != nil {
+			return fmt.Errorf("remove shell env block: %w", err)
+		}
+		return nil
+	default:
+		return nil
+	}
+
+	return config.WriteAtomicJSON(resolvedPath, root)
+}
+
 // GetBoundModels returns the current model mappings for a given CLI.
 func (uc *SwitchUseCases) GetBoundModels(targetCLIID int64) (map[string]string, error) {
 	am, err := uc.multiplexRepo.GetActive(targetCLIID)
 	if err != nil {
 		return nil, err
 	}
-	if am.TargetCLIID == 0 {
-		// No active multiplex — return empty map, no error
+	if am == nil {
 		return make(map[string]string), nil
 	}
 
@@ -288,16 +413,17 @@ func (uc *SwitchUseCases) GetBoundModels(targetCLIID int64) (map[string]string, 
 	return mappings, nil
 }
 
-// GetProviderForCLI returns the provider ID bound to the given CLI.
+// GetProviderForCLI returns the first provider ID bound to the given CLI.
+// For multi-provider setups, use ListBindingsForCLI for all providers.
 func (uc *SwitchUseCases) GetProviderForCLI(targetCLIID int64) (int64, error) {
-	am, err := uc.multiplexRepo.GetActive(targetCLIID)
+	all, err := uc.multiplexRepo.ListForCLI(targetCLIID)
 	if err != nil {
 		return 0, err
 	}
-	if am.TargetCLIID == 0 {
+	if len(all) == 0 {
 		return 0, fmt.Errorf("no active multiplex for target CLI %d", targetCLIID)
 	}
-	return am.ProviderID, nil
+	return all[0].ProviderID, nil
 }
 
 // ListActiveMultiplexes returns all active multiplexes with joined data.

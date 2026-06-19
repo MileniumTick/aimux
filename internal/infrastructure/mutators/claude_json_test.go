@@ -116,14 +116,22 @@ func TestClaudeSettingsJSON_EmptyMappings(t *testing.T) {
 		t.Fatal("expected 'env' block to exist even with empty mappings")
 	}
 
-		if len(env) != 1 {
-			t.Errorf("expected only ANTHROPIC_AUTH_TOKEN in env, got %d entries", len(env))
+		// 3 entries: ANTHROPIC_AUTH_TOKEN + CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC + CLAUDE_CODE_EFFORT_LEVEL
+		const minExpected = 3
+		if len(env) < minExpected {
+			t.Errorf("expected at least %d env entries (auth + extras), got %d", minExpected, len(env))
 		}
 		if env["ANTHROPIC_AUTH_TOKEN"] != "sk-test-key-12345" {
 			t.Errorf("expected api key in env, got %v", env["ANTHROPIC_AUTH_TOKEN"])
 		}
 		if _, exists := env["ANTHROPIC_BASE_URL"]; exists {
 			t.Error("ANTHROPIC_BASE_URL should not be present when BaseURL is empty")
+		}
+		if env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] != "1" {
+			t.Error("expected CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC default")
+		}
+		if env["CLAUDE_CODE_EFFORT_LEVEL"] != "max" {
+			t.Error("expected CLAUDE_CODE_EFFORT_LEVEL default")
 		}
 }
 
@@ -389,8 +397,62 @@ func TestClaudeSettingsJSON_NoMillionContext(t *testing.T) {
 	json.Unmarshal(content, &root)
 	env := root["env"].(map[string]any)
 
-	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "gpt-4o" {
-		t.Errorf("expected 'gpt-4o' without suffix, got %v", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
+	// gpt-4o has 128K context → gets [128k] suffix now
+	if env["ANTHROPIC_DEFAULT_SONNET_MODEL"] != "gpt-4o[128k]" {
+		t.Errorf("expected 'gpt-4o[128k]', got %v", env["ANTHROPIC_DEFAULT_SONNET_MODEL"])
+	}
+}
+
+func TestClaudeSettingsJSON_EnsureAnthropicPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"empty URL", "", ""},
+		{"no path", "https://api.example.com", "https://api.example.com/anthropic"},
+		{"trailing slash", "https://api.example.com/", "https://api.example.com/anthropic"},
+		{"v1 path", "https://api.example.com/v1", "https://api.example.com/anthropic"},
+		{"already anthropic", "https://api.example.com/anthropic", "https://api.example.com/anthropic"},
+		{"custom port", "http://localhost:8080/v1", "http://localhost:8080/anthropic"},
+		{"long path", "https://proxy.istmo.center/anthropic/v1", "https://proxy.istmo.center/anthropic"},
+		{"auth in URL", "https://user:pass@api.example.com/v1", "https://user:pass@api.example.com/anthropic"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ensureClaudeBaseURL(tt.input)
+			if got != tt.expected {
+				t.Errorf("ensureClaudeBaseURL(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestClaudeSettingsJSON_ANTHROPIC_BASE_URL_Path(t *testing.T) {
+	// When BaseURL has a non-/anthropic path, the mutator should normalize it.
+	m := &ClaudeSettingsJSON{}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	mappings := map[string]string{
+		"ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4",
+	}
+
+	provider := defaultClaudeProvider()
+	provider.BaseURL = "https://api.test.com/v1"
+
+	if _, err := m.Mutate(path, mappings, provider, defaultClaudeConfig()); err != nil {
+		t.Fatalf("Mutate failed: %v", err)
+	}
+
+	content, _ := os.ReadFile(path)
+	var root map[string]any
+	json.Unmarshal(content, &root)
+	env := root["env"].(map[string]any)
+
+	if env["ANTHROPIC_BASE_URL"] != "https://api.test.com/anthropic" {
+		t.Errorf("expected 'https://api.test.com/anthropic', got %v", env["ANTHROPIC_BASE_URL"])
 	}
 }
 
