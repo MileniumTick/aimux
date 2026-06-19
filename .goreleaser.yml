@@ -46,5 +46,6 @@ brews:
     license: "MIT"
     url_template: >-
       https://github.com/MileniumTick/aimux/releases/download/{{ .Tag }}/{{ .ArtifactName }}
+    directory: Formula
     test: |
       system "#{bin}/aimux version"
