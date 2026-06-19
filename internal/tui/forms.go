@@ -164,7 +164,13 @@ func NewRegisterModelsForm(models []domain.ProviderModel, preSelected map[string
 	for _, m := range models {
 		opts = append(opts, huh.NewOption(m.ModelName, m.ModelName))
 	}
+	// Pre-populate with defaults so user can press Enter immediately
 	result.RegisteredModels = make([]string, 0, len(models))
+	for _, m := range models {
+		if preSelected[m.ModelName] {
+			result.RegisteredModels = append(result.RegisteredModels, m.ModelName)
+		}
+	}
 
 	return huh.NewForm(
 		huh.NewGroup(

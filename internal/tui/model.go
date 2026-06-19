@@ -971,7 +971,6 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 
 	case switchSelectModelsView:
 		m.form = nil
-		// Detect if this is an edit (from manage bindings) or initial selection
 		selected := m.switchRegisterResult.RegisteredModels
 		custom := m.switchEditModelsResult.CustomModels
 		if len(custom) > 0 {
@@ -983,17 +982,19 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 				}
 			}
 		}
+		if len(selected) == 0 {
+			m.form = NewSelectModelsForm(m.switchProviderModels, &m.switchRegisterResult)
+			m.currentView = switchSelectModelsView
+			return m, m.form.Init()
+		}
 		m.switchRegisteredModels = selected
-		if len(m.switchRegisteredModels) > 0 {
-			mappings := map[string]string{"_registered": strings.Join(m.switchRegisteredModels, ",")}
-			if err := m.switchUseCases.BindProfile(m.switchTargetCLIID, m.switchProviderID, mappings); err != nil {
-				return m, func() tea.Msg {
-					return notificationMsg{message: fmt.Sprintf("Bind failed: %s", err.Error()), isError: true}
-				}
+		mappings := map[string]string{"_registered": strings.Join(selected, ",")}
+		if err := m.switchUseCases.BindProfile(m.switchTargetCLIID, m.switchProviderID, mappings); err != nil {
+			return m, func() tea.Msg {
+				return notificationMsg{message: fmt.Sprintf("Bind failed: %s", err.Error()), isError: true}
 			}
 		}
-		m.switchModelMetadataSummary = buildMetadataSummary(m.switchRegisteredModels, m.switchProviderID, m.switchUseCases)
-		// Regenerate config so changes take effect immediately
+		m.switchModelMetadataSummary = buildMetadataSummary(selected, m.switchProviderID, m.switchUseCases)
 		if _, err := m.switchUseCases.Apply(m.switchTargetCLIID, 0); err != nil {
 			log.Printf("config regenerate after model selection failed: %v", err)
 		}
