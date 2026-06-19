@@ -193,6 +193,34 @@ func NewSelectModelsForm(models []domain.ProviderModel, result *RegisterModelsRe
 	return NewRegisterModelsForm(models, preselected, result)
 }
 
+// SelectSingleModelResult holds the selected model from a single-select form.
+type SelectSingleModelResult struct {
+	ModelName string
+}
+
+// NewSelectSingleModelForm creates a single-select to pick one model for a CLI
+// that only supports a single model (e.g. Copilot).
+func NewSelectSingleModelForm(models []domain.ProviderModel, result *SelectSingleModelResult) *huh.Form {
+	opts := make([]huh.Option[string], 0, len(models))
+	for _, m := range models {
+		opts = append(opts, huh.NewOption(m.ModelName, m.ModelName))
+	}
+	// Default: first model pre-selected
+	if len(models) > 0 {
+		result.ModelName = models[0].ModelName
+	}
+
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Select Model").
+				Description("Copilot uses a single model at a time.").
+				Options(opts...).
+				Value(&result.ModelName),
+		),
+	).WithHeight(10)
+}
+
 // EditModelsResult holds the result from the edit-models form.
 type EditModelsResult struct {
 	SelectedModels []string

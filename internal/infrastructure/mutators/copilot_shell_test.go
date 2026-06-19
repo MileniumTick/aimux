@@ -73,6 +73,38 @@ func TestCopilotShellProfile_WritesToProfile(t *testing.T) {
 	}
 }
 
+func TestCopilotShellProfile_UsesRegisteredModels(t *testing.T) {
+	m := &CopilotShellProfile{}
+	dir := t.TempDir()
+
+	profilePath := filepath.Join(dir, ".zshrc")
+	os.Setenv("SHELL", "/bin/zsh")
+	t.Cleanup(func() { os.Unsetenv("SHELL") })
+
+	origHome := os.Getenv("HOME")
+	os.Setenv("HOME", dir)
+	t.Cleanup(func() { os.Setenv("HOME", origHome) })
+
+	provider := defaultCopilotProvider()
+	// Simulate multi-select flow: no COPILOT_MODEL in mappings
+	cfg := map[string]any{
+		"provider_type":     "openai",
+		"_registered_models": []string{"deepseek-v4-flash", "deepseek-v4-pro"},
+	}
+
+	_, err := m.Mutate("", map[string]string{}, provider, cfg)
+	if err != nil {
+		t.Fatalf("Mutate: %v", err)
+	}
+
+	data, _ := os.ReadFile(profilePath)
+	content := string(data)
+
+	if !strings.Contains(content, "COPILOT_MODEL") || !strings.Contains(content, "deepseek-v4-flash") {
+		t.Errorf("expected COPILOT_MODEL with deepseek-v4-flash, got:\n%s", content)
+	}
+}
+
 func TestCopilotShellProfile_IdempotentReplace(t *testing.T) {
 	m := &CopilotShellProfile{}
 	dir := t.TempDir()

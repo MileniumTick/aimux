@@ -152,6 +152,8 @@ type model struct {
 	switchRegisteredModels     []string
 	switchRegisterResult       RegisterModelsResult
 	switchEditModelsResult     EditModelsResult
+	switchSingleModelResult    SelectSingleModelResult
+	switchIsCopilot            bool
 	switchBackupPath           string
 	switchDryRun               *application.DryRunResult
 	switchDryRunCurrentConfig  string                   // current config file content (for diff view)
@@ -560,12 +562,21 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, m.form.Init()
 			}
 			// Rebuild model selection with previous choices pre-selected
-			preselected := make(map[string]bool)
-			for _, name := range m.switchRegisteredModels {
-				preselected[name] = true
+			if m.switchIsCopilot {
+				defaultModel := ""
+				if len(m.switchRegisteredModels) > 0 {
+					defaultModel = m.switchRegisteredModels[0]
+				}
+				m.switchSingleModelResult = SelectSingleModelResult{ModelName: defaultModel}
+				m.form = NewSelectSingleModelForm(m.switchProviderModels, &m.switchSingleModelResult)
+			} else {
+				preselected := make(map[string]bool)
+				for _, name := range m.switchRegisteredModels {
+					preselected[name] = true
+				}
+				m.switchRegisterResult = RegisterModelsResult{}
+				m.form = NewRegisterModelsForm(m.switchProviderModels, preselected, &m.switchRegisterResult)
 			}
-			m.switchRegisterResult = RegisterModelsResult{}
-			m.form = NewRegisterModelsForm(m.switchProviderModels, preselected, &m.switchRegisterResult)
 			m.currentView = switchSelectModelsView
 			return m, m.form.Init()
 		case key.Matches(msg, menuKeys.Enter):
@@ -917,32 +928,47 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		}
 		m.switchProviderModels = models
 
-		// Determine flow: env var mapping (Claude/Codex) or direct model list (pi/OpenCode)
+		// Determine flow: env var mapping (Claude/Codex), single model (Copilot),
+		// or multi-select (pi/OpenCode)
 		m.switchUsesEnvMapping = targetCLI.Mutator == "claude-settings-json" || targetCLI.Mutator == "codex-config-toml"
+		m.switchIsCopilot = targetCLI.Mutator == "copilot-shell-profile"
 
 		if m.switchUsesEnvMapping {
 			m.currentView = switchMapModelsView
 			form, extractFn := NewMapModelsForm(envVars, models)
 			m.switchExtractFn = extractFn
 			m.form = form
-		} else {
-			// pi/OpenCode/Copilot: show model multi-select, all pre-selected by default
-			m.switchProviderModels = models
-			m.switchRegisterResult = RegisterModelsResult{}
-			m.currentView = switchSelectModelsView
-			m.form = NewSelectModelsForm(models, &m.switchRegisterResult)
 			return m, m.form.Init()
 		}
+
+		if m.switchIsCopilot {
+			// Copilot uses a single model via COPILOT_MODEL
+			m.switchSingleModelResult = SelectSingleModelResult{}
+			m.currentView = switchSelectModelsView
+			m.form = NewSelectSingleModelForm(models, &m.switchSingleModelResult)
+			return m, m.form.Init()
+		}
+
+		// pi/OpenCode: multi-select, all pre-selected by default
+		m.switchProviderModels = models
+		m.switchRegisterResult = RegisterModelsResult{}
+		m.currentView = switchSelectModelsView
+		m.form = NewSelectModelsForm(models, &m.switchRegisterResult)
+		return m, m.form.Init()
 		return m, m.form.Init()
 
 	case switchSelectModelsView:
 		m.form = nil
 		// Collect selected models from whichever form was active:
-		// NewSelectModelsForm → m.switchRegisterResult.RegisteredModels
-		// NewEditModelsForm   → m.switchEditModelsResult.SelectedModels
+		// NewSelectModelsForm     → m.switchRegisterResult.RegisteredModels
+		// NewEditModelsForm       → m.switchEditModelsResult.SelectedModels
+		// NewSelectSingleModelForm → m.switchSingleModelResult.ModelName
 		selected := m.switchRegisterResult.RegisteredModels
 		if len(selected) == 0 {
 			selected = m.switchEditModelsResult.SelectedModels
+		}
+		if len(selected) == 0 && m.switchSingleModelResult.ModelName != "" {
+			selected = []string{m.switchSingleModelResult.ModelName}
 		}
 		custom := m.switchEditModelsResult.CustomModels
 		if len(custom) > 0 {
@@ -955,7 +981,11 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 			}
 		}
 		if len(selected) == 0 {
-			m.form = NewSelectModelsForm(m.switchProviderModels, &m.switchRegisterResult)
+			if m.switchIsCopilot {
+				m.form = NewSelectSingleModelForm(m.switchProviderModels, &m.switchSingleModelResult)
+			} else {
+				m.form = NewSelectModelsForm(m.switchProviderModels, &m.switchRegisterResult)
+			}
 			m.currentView = switchSelectModelsView
 			return m, m.form.Init()
 		}
@@ -1598,6 +1628,8 @@ func (m *model) resetSwitchState() {
 	m.switchRegisteredModels = nil
 	m.switchRegisterResult = RegisterModelsResult{}
 	m.switchEditModelsResult = EditModelsResult{}
+	m.switchSingleModelResult = SelectSingleModelResult{}
+	m.switchIsCopilot = false
 	m.switchBackupPath = ""
 	m.switchDryRun = nil
 	m.switchModelMetadataSummary = nil
@@ -1636,6 +1668,22 @@ func (m *model) editSelectedBinding() (tea.Model, tea.Cmd) {
 			return notificationMsg{message: fmt.Sprintf("Failed to get models: %s", err.Error()), isError: true}
 		}
 	}
+
+	// Determine CLI type to pick the right form
+	for _, c := range m.targetCLIs {
+		if c.ID == m.switchTargetCLIID && c.Mutator == "copilot-shell-profile" {
+			// Copilot: single model select
+			defaultModel := ""
+			if len(currentModels) > 0 {
+				defaultModel = currentModels[0]
+			}
+			m.switchSingleModelResult = SelectSingleModelResult{ModelName: defaultModel}
+			m.form = NewSelectSingleModelForm(models, &m.switchSingleModelResult)
+			m.currentView = switchSelectModelsView
+			return m, m.form.Init()
+		}
+	}
+
 	m.switchEditModelsResult = EditModelsResult{}
 	m.form = NewEditModelsForm(models, currentModels, &m.switchEditModelsResult)
 	m.currentView = switchSelectModelsView

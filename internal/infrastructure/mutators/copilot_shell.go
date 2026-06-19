@@ -97,19 +97,45 @@ func (m *CopilotShellProfile) Mutate(
 		envLines = append(envLines, fmt.Sprintf(exportFmt, "COPILOT_PROVIDER_BEARER_TOKEN", provider.AuthToken))
 	}
 
-	// Model mapping with context suffix
+	// Model mapping with context suffix.
+	// Priority: 1) COPILOT_MODEL from modelMappings (env-var mapping flow),
+	//           2) first model from _registered_models (multi-select flow),
+	//           3) first non-empty value from any modelMapping key.
 	modelMeta, _ := mutatorConfig["_model_metadata"].(map[string]any)
-	for _, val := range modelMappings {
-		if val != "" {
-			if md, ok := modelMeta[val].(map[string]any); ok {
-				suffix := config.LookupContextSuffix(md)
-				if suffix != "" {
-					val = val + suffix
-				}
+	var copilotModel string
+
+	if m, ok := modelMappings["COPILOT_MODEL"]; ok && m != "" {
+		copilotModel = m
+	} else if reg, ok := mutatorConfig["_registered_models"]; ok {
+		switch v := reg.(type) {
+		case []string:
+			if len(v) > 0 {
+				copilotModel = v[0]
 			}
-			envLines = append(envLines, fmt.Sprintf(exportFmt, "COPILOT_MODEL", val))
-			break
+		case []any:
+			if len(v) > 0 {
+				copilotModel = fmt.Sprintf("%v", v[0])
+			}
 		}
+	}
+
+	if copilotModel == "" {
+		for _, val := range modelMappings {
+			if val != "" {
+				copilotModel = val
+				break
+			}
+		}
+	}
+
+	if copilotModel != "" {
+		if md, ok := modelMeta[copilotModel].(map[string]any); ok {
+			suffix := config.LookupContextSuffix(md)
+			if suffix != "" {
+				copilotModel = copilotModel + suffix
+			}
+		}
+		envLines = append(envLines, fmt.Sprintf(exportFmt, "COPILOT_MODEL", copilotModel))
 	}
 
 	// Extra env vars from mutator_config.extra_env
