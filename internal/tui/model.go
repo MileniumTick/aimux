@@ -961,11 +961,23 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 			m.switchExtractFn = extractFn
 			m.form = form
 		} else {
-			// pi/OpenCode/Copilot: show model multi-select form
-			m.currentView = switchSelectModelsView
-			m.switchRegisteredModels = nil
-			m.form = NewSelectModelsForm(models, &m.switchRegisterResult)
-			return m, m.form.Init()
+			// pi/OpenCode/Copilot: auto-register all models
+			registered := make([]string, 0, len(models))
+			for _, mdl := range models {
+				registered = append(registered, mdl.ModelName)
+			}
+			m.switchRegisteredModels = registered
+
+			mappings := map[string]string{"_registered": strings.Join(registered, ",")}
+			if err := m.switchUseCases.BindProfile(m.switchTargetCLIID, m.switchProviderID, mappings); err != nil {
+				return m, func() tea.Msg {
+					return notificationMsg{message: fmt.Sprintf("Bind failed: %s", err.Error()), isError: true}
+				}
+			}
+
+			m.currentView = switchAdvancedConfigView
+			m.switchModelMetadataSummary = buildMetadataSummary(registered, m.switchProviderID, m.switchUseCases)
+			return m, nil
 		}
 		return m, m.form.Init()
 
