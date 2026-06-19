@@ -14,7 +14,6 @@ func defaultPiProvider() domain.Provider {
 		Name:    "Bifrost",
 		BaseURL: "https://bifrost.example.com/v1",
 		APIKey:  "sk-pi-test-key",
-		ApiType: domain.ApiTypeAnthropic,
 	}
 }
 
@@ -58,9 +57,9 @@ func TestPiDualJSON_WritesModelsJSON(t *testing.T) {
 	if bifrost["apiKey"] != "sk-pi-test-key" {
 		t.Errorf("expected apiKey, got %v", bifrost["apiKey"])
 	}
-	// auto-derived from provider.ApiType (Anthropic)
-	if bifrost["api"] != "anthropic-messages" {
-		t.Errorf("expected api 'anthropic-messages', got %v", bifrost["api"])
+	// Default api is now openai-completions (ApiType removed)
+	if bifrost["api"] != "openai-completions" {
+		t.Errorf("expected api 'openai-completions', got %v", bifrost["api"])
 	}
 
 	models := bifrost["models"].([]any)
@@ -139,7 +138,7 @@ func TestPiDualJSON_APIOverride(t *testing.T) {
 
 	cfg := map[string]any{
 		"provider_id": "bifrost",
-		"api":         "openai-completions",
+		"api":         "anthropic-messages",
 	}
 
 	mappings := map[string]string{"M": "m1"}
@@ -155,9 +154,9 @@ func TestPiDualJSON_APIOverride(t *testing.T) {
 
 	providers := root["providers"].(map[string]any)
 	bifrost := providers["bifrost"].(map[string]any)
-	// override wins over auto-derived "anthropic-messages"
-	if bifrost["api"] != "openai-completions" {
-		t.Errorf("expected override 'openai-completions', got %v", bifrost["api"])
+	// override wins over default "openai-completions"
+	if bifrost["api"] != "anthropic-messages" {
+		t.Errorf("expected override 'anthropic-messages', got %v", bifrost["api"])
 	}
 }
 

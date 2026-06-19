@@ -86,8 +86,8 @@ func (m *OpenCodeProviderJSON) Mutate(
 		"models": models,
 	}
 
-	// NPM package: derive from provider API type, allow mutatorConfig override
-	npm := openCodeNPMForProvider(provider.ApiType)
+	// NPM package: default for OpenAI-compatible. mutatorConfig "npm" overrides.
+	npm := "@ai-sdk/openai-compatible"
 	if override, ok := mutatorConfig["npm"].(string); ok && override != "" {
 		npm = override
 	}
@@ -161,19 +161,5 @@ func fillOpenCodeModelEntry(entry map[string]any, md map[string]any) {
 	// Variants from metadata
 	if vars, ok := md[domain.MetaVariants]; ok {
 		entry["variants"] = vars
-	}
-}
-
-// openCodeNPMForProvider maps domain API types to OpenCode npm packages.
-func openCodeNPMForProvider(apiType domain.ApiType) string {
-	switch apiType {
-	case domain.ApiTypeAnthropic:
-		return "@ai-sdk/anthropic"
-	case domain.ApiTypeGoogle:
-		return "@ai-sdk/google"
-	case domain.ApiTypeOpenAI:
-		return "@ai-sdk/openai-compatible"
-	default:
-		return "@ai-sdk/openai-compatible"
 	}
 }

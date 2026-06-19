@@ -90,12 +90,12 @@ func setupDB() (db *sql.DB, cleanup func(), err error) {
 	for _, step := range []func(*sql.DB) error{
 		sqlite2.RunMigrations,
 		sqlite2.MigrationAddMutatorColumns,
-		sqlite2.MigrationAddApiTypeColumn,
+		sqlite2.MigrationDropApiTypeColumn,
 		sqlite2.MigrationAddModelMetadataColumn,
 		sqlite2.MigrationAddDiscoveryURLColumn,
 		sqlite2.MigrationMultiProvider,
 		sqlite2.MigrationRemoveOpenCodeNpm,
-		sqlite2.MigrationCopilotShellProfile,
+		sqlite2.MigrationAddDefaultContextWindow,
 		sqlite2.CreateIndexes,
 		sqlite2.SeedTargetCLIs,
 	} {

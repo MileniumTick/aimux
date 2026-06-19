@@ -1,26 +1,17 @@
 package domain
 
-// ApiType represents the provider's API type for model discovery.
-type ApiType string
-
-const (
-	ApiTypeOpenAI    ApiType = "openai"
-	ApiTypeAnthropic ApiType = "anthropic"
-	ApiTypeGoogle    ApiType = "google"
-)
-
 // Provider represents a provider row in the database.
 type Provider struct {
-	ID           int64
-	Name         string
-	BaseURL      string
-	DiscoveryURL string // optional, separate URL for model discovery; empty = use BaseURL
-	APIKey       string
-	AuthToken    string
-	ApiType      ApiType
-	Status       string
-	CreatedAt    string
-	UpdatedAt    string
+	ID                   int64
+	Name                 string
+	BaseURL              string
+	DiscoveryURL         string // optional, separate URL for model discovery; empty = use BaseURL
+	DefaultContextWindow int64  // fallback context window when API/catalog don't provide it; 0 = not set
+	APIKey               string
+	AuthToken            string
+	Status               string
+	CreatedAt            string
+	UpdatedAt            string
 }
 
 // ProviderModel represents a model row associated with a provider.
@@ -66,10 +57,10 @@ type ModelMetadata map[string]any
 
 // ProviderRepository defines the interface for provider persistence.
 type ProviderRepository interface {
-	Add(name, baseURL, discoveryURL, apiKey, authToken string, apiType ApiType) (int64, error)
+	Add(name, baseURL, discoveryURL, apiKey, authToken string, defaultContextWindow ...int64) (int64, error)
 	Get(id int64) (Provider, error)
 	List() ([]Provider, error)
-	Update(id int64, baseURL, discoveryURL, apiKey, authToken string, apiType ApiType) error
+	Update(id int64, baseURL, discoveryURL, apiKey, authToken string, defaultContextWindow ...int64) error
 	UpdateStatus(id int64, status string) error
 	Delete(id int64) error
 	InsertModels(providerID int64, modelNames []string) error

@@ -29,8 +29,8 @@ func (m *PiDualJSON) Mutate(
 		return nil, fmt.Errorf("pi mutator requires provider_id in mutator_config")
 	}
 
-	// Derive pi api value from provider.ApiType. mutator_config "api" overrides.
-	apiVal := piAPIFromProvider(provider)
+	// Default api for OpenAI-compatible. mutator_config "api" overrides.
+	apiVal := "openai-completions"
 	if cfgAPI, ok := mutatorConfig["api"].(string); ok && cfgAPI != "" {
 		apiVal = cfgAPI
 	}
@@ -249,19 +249,4 @@ func buildModelList(mutatorConfig map[string]any, modelMappings map[string]strin
 		}
 	}
 	return modelList
-}
-
-// piAPIFromProvider maps domain.ApiType to pi's api field value.
-// ponytail: simple mapping, safe "openai-completions" fallback for unknown types.
-func piAPIFromProvider(p domain.Provider) string {
-	switch p.ApiType {
-	case domain.ApiTypeAnthropic:
-		return "anthropic-messages"
-	case domain.ApiTypeGoogle:
-		return "google-generative-ai"
-	case domain.ApiTypeOpenAI:
-		return "openai-completions"
-	default:
-		return "openai-completions"
-	}
 }

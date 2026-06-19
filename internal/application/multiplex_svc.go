@@ -150,7 +150,13 @@ func (uc *SwitchUseCases) Apply(targetCLIID, providerID int64) (*domain.BackupRe
 			modelMeta := make(map[string]any)
 			for _, m := range models {
 				if len(m.Metadata) > 0 {
-					modelMeta[m.ModelName] = m.Metadata
+					modelMeta[m.ModelName] = map[string]any(m.Metadata)
+				} else if provider.DefaultContextWindow > 0 {
+					// Fallback: model sin metadata pero provider tiene default
+					modelMeta[m.ModelName] = map[string]any(domain.ModelMetadata{
+						domain.MetaContextWindow: provider.DefaultContextWindow,
+						domain.MetaContextSuffix: config.ContextSuffixForWindow(provider.DefaultContextWindow),
+					})
 				}
 			}
 			if len(modelMeta) > 0 {
