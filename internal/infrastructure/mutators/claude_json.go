@@ -1,6 +1,7 @@
 package mutators
 
 import (
+	"net/url"
 	"os"
 
 	"github.com/MileniumTick/aimux/internal/domain"
@@ -88,7 +89,7 @@ func (m *ClaudeSettingsJSON) Mutate(
 	}
 
 	if provider.BaseURL != "" {
-		env["ANTHROPIC_BASE_URL"] = provider.BaseURL
+		env["ANTHROPIC_BASE_URL"] = ensureClaudeBaseURL(provider.BaseURL)
 	}
 
 	// Extra Claude Code env vars (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, etc.)
@@ -104,6 +105,23 @@ func (m *ClaudeSettingsJSON) Mutate(
 	config.PruneBackups(configPath, 5)
 
 	return backupResult, nil
+}
+
+// ensureClaudeBaseURL ensures the URL path is always /anthropic for Claude Code.
+// Claude Code requires the API path to be /anthropic regardless of provider API type.
+// ponytail: net/url handles edge cases; no need for custom string manipulation.
+func ensureClaudeBaseURL(rawURL string) string {
+	if rawURL == "" {
+		return rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	// Normalize: strip existing path and set to /anthropic
+	u.Path = "/anthropic"
+	u.RawPath = "" // let Go reconstruct
+	return u.String()
 }
 
 // applyClaudeExtraEnv writes default and user-override extra env vars into the env map.

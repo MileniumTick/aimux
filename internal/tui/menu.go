@@ -17,22 +17,28 @@ const (
 
 var (
 	menuSelectedStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("255")).
-				Background(lipgloss.Color("239")).
+				Foreground(aimuxT.TextPrimary).
+				Background(aimuxT.BgSelected).
 				Padding(0, 2).
-				Bold(true)
+				Bold(true).
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderLeft(true).
+				BorderForeground(aimuxT.Accent)
 
 	menuNormalStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("250")).
+			Foreground(aimuxT.TextSecondary).
 			Padding(0, 2)
 
 	menuInactiveStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("238")).
+				Foreground(aimuxT.TextDim).
 				Padding(0, 2).
-				Italic(true)
+				Italic(true).
+				BorderStyle(lipgloss.NormalBorder()).
+				BorderLeft(true).
+				BorderForeground(lipgloss.Color(""))
 
 	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#555555"}).
+			Foreground(aimuxT.TextDim).
 			Padding(0, 1).
 			Italic(true)
 )
@@ -62,7 +68,7 @@ func RenderMenu(selectedIndex int, hasProviders bool) string {
 		if !item.enabled {
 			rendered = append(rendered, menuInactiveStyle.Render(item.label))
 		} else if i == selectedIndex {
-			rendered = append(rendered, "> "+menuSelectedStyle.Render(item.label))
+			rendered = append(rendered, menuSelectedStyle.Render(" "+item.label))
 		} else {
 			rendered = append(rendered, "  "+menuNormalStyle.Render(item.label))
 		}

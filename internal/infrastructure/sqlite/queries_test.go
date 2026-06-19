@@ -229,6 +229,9 @@ func TestSetAndGetActiveMultiplex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetActiveMultiplex failed: %v", err)
 	}
+	if am == nil {
+		t.Fatal("expected non-nil ActiveMultiplex")
+	}
 	if am.TargetCLIID != 1 {
 		t.Errorf("expected target_cli_id 1, got %d", am.TargetCLIID)
 	}
@@ -246,8 +249,8 @@ func TestGetActiveMultiplex_NotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetActiveMultiplex for non-existent CLI should not error: %v", err)
 	}
-	if am.TargetCLIID != 0 {
-		t.Errorf("expected empty ActiveMultiplex, got target_cli_id=%d", am.TargetCLIID)
+	if am != nil {
+		t.Errorf("expected nil for non-existent ActiveMultiplex, got target_cli_id=%d", am.TargetCLIID)
 	}
 }
 
@@ -302,8 +305,8 @@ func TestClearActiveMultiplex(t *testing.T) {
 	}
 
 	am, _ := muxRepo.GetActive(1)
-	if am.TargetCLIID != 0 {
-		t.Errorf("expected empty ActiveMultiplex after clear, got target_cli_id=%d", am.TargetCLIID)
+	if am != nil {
+		t.Errorf("expected nil after clear, got target_cli_id=%d", am.TargetCLIID)
 	}
 }
 
@@ -393,8 +396,8 @@ func TestDeleteProvider_ActiveMultiplexCascade(t *testing.T) {
 	}
 
 	am, _ := muxRepo.GetActive(1)
-	if am.TargetCLIID != 0 {
-		t.Error("expected empty ActiveMultiplex after provider cascade delete")
+	if am != nil {
+		t.Errorf("expected nil after cascade delete, got target_cli_id=%d", am.TargetCLIID)
 	}
 }
 

@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -10,256 +9,95 @@ import (
 )
 
 var (
-	// Header: bold white on subtle gray, no border
-	headerStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("255")).
-			Background(lipgloss.Color("236")).
-			Padding(0, 2)
-
-	// Divider line below header
-	dividerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("237"))
-
-	rowEvenStyle = lipgloss.NewStyle().
-			Padding(0, 2).
-			Foreground(lipgloss.Color("252"))
-
-	rowOddStyle = lipgloss.NewStyle().
-			Padding(0, 2).
-			Foreground(lipgloss.Color("252")).
-			Background(lipgloss.Color("236"))
-
-	inactiveStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241"))
-
-	activeStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("42"))
-
-	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("167"))
+	headerStyle   = aimuxT.TableHeader
+	dividerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("237"))
+	rowEvenStyle  = aimuxT.TableRow
+	rowOddStyle   = aimuxT.TableRowAlt
+	inactiveStyle = aimuxT.Inactive
+	activeStyle   = aimuxT.TableActive
+	errorStyle    = lipgloss.NewStyle().Foreground(aimuxT.Red)
 )
 
-// RenderTable renders the status table showing CLIs and active multiplexes.
-func RenderTable(providers []domain.Provider, activeMultiplexes []domain.ActiveMultiplex, targetCLIs []domain.TargetCLI, termWidth int) string {
-	var b strings.Builder
-
-	activeByCLI := make(map[int64][]domain.ActiveMultiplex)
-	for _, am := range activeMultiplexes {
-		activeByCLI[am.TargetCLIID] = append(activeByCLI[am.TargetCLIID], am)
-	}
-
-	availWidth := termWidth
-	if availWidth < 72 {
-		availWidth = 72
-	}
-
-	// Columns: CLI 20%, Provider 25%, Models rest, Status 10
-	statW := 8
-	cliW := availWidth * 20 / 100
-	provW := availWidth * 25 / 100
-	modW := availWidth - cliW - provW - statW
-
-	minCLI, minProv, minStat, minMod := 16, 10, 6, 15
-	if cliW < minCLI {
-		cliW = minCLI
-	}
-	if provW < minProv {
-		provW = minProv
-	}
-	if statW < minStat {
-		statW = minStat
-	}
-	if modW < minMod {
-		modW = minMod
-	}
-	total := cliW + provW + modW + statW
-	if total > availWidth {
-		over := total - availWidth
-		modW -= over
-		if modW < minMod {
-			modW = minMod
-		}
-	}
-
-	// Header
-	header := lipgloss.JoinHorizontal(lipgloss.Top,
-		headerStyle.Width(cliW).Render("CLI"),
-		headerStyle.Width(provW).Render("Provider"),
-		headerStyle.Width(modW).Render("Models"),
-		headerStyle.Width(statW).Render("Status"),
-	)
-	divider := dividerStyle.Width(availWidth).Render(strings.Repeat("─", availWidth))
-
-	if len(targetCLIs) == 0 {
-		row := lipgloss.JoinHorizontal(lipgloss.Top,
-			rowEvenStyle.Width(cliW).Render("---"),
-			rowEvenStyle.Width(provW).Render("---"),
-			rowEvenStyle.Width(modW).Render("---"),
-			inactiveStyle.Width(statW).Render("INACTIVE"),
-		)
-		b.WriteString(lipgloss.JoinVertical(lipgloss.Left,
-			header, divider, row,
-		))
-		b.WriteString("\n\n")
-		b.WriteString(helpStyle.Render("No CLIs configured — run 'aimux init' first"))
-		return b.String()
-	}
-
-	rows := []string{header, divider}
-	for i, cli := range targetCLIs {
-		rowStyle := rowEvenStyle
-		if i%2 == 1 {
-			rowStyle = rowOddStyle
-		}
-
-		ams, hasActive := activeByCLI[cli.ID]
-		if hasActive && len(ams) > 0 {
-			first := ams[0]
-
-			providerName := first.ProviderName
-			if providerName == "" {
-				providerName = "---"
-			}
-			if len(ams) > 1 {
-				providerName = fmt.Sprintf("%s +%d", providerName, len(ams)-1)
-			}
-
-			// Collect model IDs from first binding for display
-			mappings := make(map[string]string)
-			modelsStr := "---"
-			if err := json.Unmarshal([]byte(first.ModelMappings), &mappings); err == nil && len(mappings) > 0 {
-				modelIDs := make([]string, 0, len(mappings))
-				for _, v := range mappings {
-					if v != "" {
-						modelIDs = append(modelIDs, v)
-					}
-				}
-				if len(modelIDs) > 0 {
-					modelsStr = strings.Join(modelIDs, ", ")
-				}
-			}
-
-			row := lipgloss.JoinHorizontal(lipgloss.Top,
-				rowStyle.Width(cliW).Render(cli.Name),
-				rowStyle.Width(provW).Render(providerName),
-				rowStyle.Width(modW).Render(truncate(modelsStr, modW-1)),
-				activeStyle.Width(statW).Render("ACTIVE"),
-			)
-			rows = append(rows, row)
-		} else {
-			row := lipgloss.JoinHorizontal(lipgloss.Top,
-				rowStyle.Width(cliW).Render(cli.Name),
-				rowStyle.Width(provW).Render("---"),
-				rowStyle.Width(modW).Render("---"),
-				inactiveStyle.Width(statW).Render("INACTIVE"),
-			)
-			rows = append(rows, row)
-		}
-	}
-
-	b.WriteString(lipgloss.JoinVertical(lipgloss.Left, rows...))
-	b.WriteString("\n\n")
-	b.WriteString(helpStyle.Render("Enter = Select action · ↑/↓ navigate menu · q quit"))
-	return b.String()
-}
-
-// RenderProviderList renders the provider management table.
-func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth int) string {
+// RenderProviderList renders the provider management list with status, model count, and usage info.
+func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth int, allModels []domain.ProviderModel, activeMultiplexes []domain.ActiveMultiplex) string {
 	if len(providers) == 0 {
 		return helpStyle.Render("No providers configured. Press 'a' to add one.")
 	}
 
-	// Dynamic columns
-	nameW := 18
-	urlW := 28
-	modelsW := 14
-	statW := 8
+	// Build model count per provider
+	modelCounts := make(map[int64]int)
+	for _, m := range allModels {
+		modelCounts[m.ProviderID]++
+	}
 
-	if termWidth > 0 {
-		totalPadding := 6
-		availWidth := termWidth - totalPadding
-		minName := 10
-		minURL := 12
-		minStat := 6
-		minModels := 8
-		reserved := minName + minURL + minStat
-		modAvail := availWidth - reserved
-		if modAvail > minModels {
-			nameW = minName
-			urlW = availWidth - minName - minStat - minModels
-			modelsW = modAvail / 2
-			statW = minStat
-			if urlW < minURL {
-				urlW = minURL
-			}
-		}
+	// Build set of in-use provider IDs
+	inUse := make(map[int64]bool)
+	for _, am := range activeMultiplexes {
+		inUse[am.ProviderID] = true
 	}
 
 	var b strings.Builder
-	header := lipgloss.JoinHorizontal(lipgloss.Top,
-		headerStyle.Width(nameW).Render("Name"),
-		headerStyle.Width(urlW).Render("Base URL"),
-		headerStyle.Width(modelsW).Render("Models"),
-		headerStyle.Width(statW).Render("Status"),
-	)
-	dispW := termWidth
-	if dispW < 2 {
-		dispW = 72
-	}
-	divider := dividerStyle.Width(dispW - 2).Render(strings.Repeat("─", dispW-2))
+	b.WriteString("\n")
 
-	rows := []string{header, divider}
 	for i, p := range providers {
-		rowStyle := rowEvenStyle
-		if i%2 == 1 {
-			rowStyle = rowOddStyle
+		selected := p.ID == selectedID
+
+		titleStyle := aimuxT.ItemTitle
+		detailStyle := aimuxT.ItemDesc
+		if selected {
+			titleStyle = aimuxT.SelTitle
+			detailStyle = aimuxT.SelDesc
 		}
 
-		name := p.Name
-		if p.ID == selectedID {
-			name = "> " + name
-		} else {
-			name = "  " + name
-		}
-
-		baseURL := p.BaseURL
-		urlDisplayLen := urlW - 2
-		if urlDisplayLen < 0 {
-			urlDisplayLen = 0
-		}
-		if len(baseURL) > urlDisplayLen && urlDisplayLen > 3 {
-			baseURL = baseURL[:urlDisplayLen-3] + "..."
-		} else if len(baseURL) > urlDisplayLen {
-			baseURL = baseURL[:urlDisplayLen]
-		}
-		baseURL = "  " + baseURL
-
-		status := "OK"
-		statusRender := activeStyle
+		// Status label
+		statusLabel := "OK"
+		statusFg := aimuxT.Green
 		if p.Status == "error" {
-			status = "ERROR"
-			statusRender = errorStyle
+			statusLabel = "ERROR"
+			statusFg = aimuxT.Red
+		}
+		statusLabel = lipgloss.NewStyle().Foreground(statusFg).Render(statusLabel)
+
+		// In-use badge
+		useLabel := ""
+		if inUse[p.ID] {
+			useLabel = lipgloss.NewStyle().
+				Foreground(aimuxT.AccentAlt).
+				Render(" in use")
 		}
 
-		modelsStatus := "---"
-		if p.Status == "active" {
-			modelsStatus = "Yes"
-		} else if p.Status == "error" {
-			modelsStatus = "Failed"
+		b.WriteString(titleStyle.Render(fmt.Sprintf(" %s  %s%s", p.Name, statusLabel, useLabel)))
+		b.WriteString("\n")
+
+		// URL display
+		url := p.BaseURL
+		maxURL := termWidth - 20
+		if maxURL < 30 {
+			maxURL = 30
+		} else if maxURL > 70 {
+			maxURL = 70
+		}
+		if len(url) > maxURL {
+			url = url[:maxURL-3] + "..."
 		}
 
-		row := lipgloss.JoinHorizontal(lipgloss.Top,
-			rowStyle.Width(nameW).Render(truncate(name, nameW-1)),
-			rowStyle.Width(urlW).Render(baseURL),
-			rowStyle.Width(modelsW).Render(modelsStatus),
-			statusRender.Width(statW).Render(status),
-		)
-		rows = append(rows, row)
+		// Model count and type
+		modelInfo := fmt.Sprintf("%d models", modelCounts[p.ID])
+		if len(p.ApiType) > 0 {
+			modelInfo += fmt.Sprintf(" · %s", p.ApiType)
+		}
+
+		b.WriteString(detailStyle.Render(fmt.Sprintf("  %s", url)))
+		b.WriteString("\n")
+		b.WriteString(detailStyle.Render(fmt.Sprintf("  %s", modelInfo)))
+		b.WriteString("\n")
+
+		if i < len(providers)-1 {
+			b.WriteString("\n")
+		}
 	}
 
-	b.WriteString(lipgloss.JoinVertical(lipgloss.Left, rows...))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 	b.WriteString(helpStyle.Render("↑/↓ navigate · Enter = Switch · a add · d delete · e edit · r retry · t test · Esc back"))
 	return b.String()
 }

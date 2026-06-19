@@ -93,7 +93,7 @@ func (m *CopilotEnvFile) Mutate(
 
 	content := strings.Join(lines, "\n") + "\n"
 
-	if err := os.WriteFile(envPath, []byte(content), 0600); err != nil {
+	if err := config.AtomicWrite([]byte(content), envPath); err != nil {
 		return nil, fmt.Errorf("write .env file: %w", err)
 	}
 

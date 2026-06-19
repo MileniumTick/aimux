@@ -26,6 +26,10 @@ type releaseAsset struct {
 // Never blocks startup: errors are swallowed, returns zero-value UpdateInfo
 // with HasUpdate=false on any failure.
 func CheckForUpdate(currentVersion string, db *sql.DB, httpClient *http.Client) UpdateInfo {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+
 	// Step 1: try cache
 	cached, err := CacheGet(db, CacheKeyLatestVersion)
 	if err == nil && cached != "" {

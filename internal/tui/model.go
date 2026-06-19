@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -11,10 +12,28 @@ import (
 	"github.com/MileniumTick/aimux/internal/domain"
 	"github.com/MileniumTick/aimux/internal/infrastructure/config"
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 )
+
+// switch step definitions for the Switch flow stepper.
+const (
+	switchStepCLI          = 1
+	switchStepProvider     = 2
+	switchStepMapModels    = 3
+	switchStepReviewConfig = 4
+	switchStepConfirm      = 5
+)
+
+var switchStepLabels = map[int]string{
+	switchStepCLI:          "Select Target CLI",
+	switchStepProvider:     "Select Provider",
+	switchStepMapModels:    "Map Models to Env Vars",
+	switchStepReviewConfig: "Review Configuration",
+	switchStepConfirm:      "Confirm & Apply",
+}
 
 type viewType int
 
@@ -28,6 +47,7 @@ const (
 	switchMapModelsView
 	switchConfirmationView
 	switchRegisterModelsView
+	switchSelectModelsView
 	switchManageBindingsView
 	deleteBindingConfirmView
 	manageCLIView
@@ -66,6 +86,11 @@ type (
 	testConnectivityResultMsg struct {
 		err error
 	}
+
+	applyResultMsg struct {
+		result *domain.BackupResult
+		err    error
+	}
 )
 
 type keyMap struct {
@@ -79,6 +104,8 @@ type keyMap struct {
 	Retry  key.Binding
 	Test   key.Binding
 	Edit   key.Binding
+	Help   key.Binding
+	Undo   key.Binding
 }
 
 var menuKeys = keyMap{
@@ -92,6 +119,8 @@ var menuKeys = keyMap{
 	Retry:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "retry fetch")),
 	Test:   key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "test")),
 	Edit:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit provider")),
+	Help:   key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+	Undo:   key.NewBinding(key.WithKeys("Z"), key.WithHelp("Z", "undo last apply")),
 }
 
 type model struct {
@@ -121,21 +150,35 @@ type model struct {
 	switchEnvVars              []string
 	switchExtractFn            func() MapModelsResult
 	switchRegisteredModels     []string
+	switchRegisterResult       RegisterModelsResult
+	switchEditModelsResult     EditModelsResult
 	switchBackupPath           string
 	switchDryRun               *application.DryRunResult
+	switchDryRunCurrentConfig  string                   // current config file content (for diff view)
 	switchModelMetadataSummary []string                 // display lines for advanced config review
 	switchUsesEnvMapping       bool                     // true: Claude Code/Codex map env→model; false: pi/OpenCode list models directly
 	switchInManageMode         bool                     // true when adding another provider to a CLI that already has bindings
 	switchCLIBindings          []domain.ActiveMultiplex // bound providers for selected CLI
 	switchRemoveMode           bool                     // true when picking a provider to remove
 	switchDeleteConfirm        bool                     // true when confirming binding deletion
+	switchSelectedBindingIdx   int                      // selected binding index in manage view
+
+	switchStep       int    // current stepper step (1-based, 0=hidden)
+	switchTotalSteps int    // total steps (0=hidden)
+	switchStepLabel  string // current step label
 
 	selectedProviderID int64
 
 	selectedCLIID     int64
 	editCLIPathResult EditCLIPathResult
 
-	loading bool
+	showHelp    bool   // when true, render help overlay instead of current view
+	exitConfirm bool   // true when waiting for second q to confirm quit
+	lastUndoCLI string // CLI name for quick undo (Z key), empty = nothing to undo
+
+	spinner    spinner.Model
+	loading    bool   // true when an async operation is in progress
+	loadingMsg string // contextual message shown with spinner
 
 	notification      string
 	notificationIsMsg bool
@@ -144,26 +187,35 @@ type model struct {
 	restoreSelectedPath string
 	restoreBackups      []application.BackupOption
 
-	updateInfo UpdateInfo
-}
-
-type UpdateInfo struct {
-	CurrentVersion string
-	LatestVersion  string
-	HasUpdate      bool
+	// ponytail: updateInfo removed — unused. Re-add when update notification is implemented.
 }
 
 func NewModel(providerUseCases *application.ProviderUseCases, switchUseCases *application.SwitchUseCases) *model {
+	s := spinner.New(spinner.WithSpinner(spinner.MiniDot))
+	s.Style = lipgloss.NewStyle().Foreground(aimuxT.AccentAlt)
 	return &model{
 		providerUseCases: providerUseCases,
 		switchUseCases:   switchUseCases,
 		currentView:      dashboardView,
 		menuSelected:     menuItemManageProviders,
+		spinner:          s,
+	}
+}
+
+// loadingCmd sets the loading state and starts the spinner.
+func (m *model) loadingCmd(msg string) tea.Cmd {
+	m.loading = true
+	m.loadingMsg = msg
+	return func() tea.Msg {
+		return spinner.TickMsg{Time: time.Now()}
 	}
 }
 
 func (m *model) Init() tea.Cmd {
-	return m.refreshData
+	return tea.Batch(
+		m.refreshData,
+		m.loadingCmd("Loading..."),
+	)
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -215,7 +267,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKeyMsg(msg)
 
+	case spinner.TickMsg:
+		if m.loading {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
 	case DashboardRefreshMsg:
+		m.loading = false
+		m.loadingMsg = ""
 		return m, nil
 
 	case SwitchToViewMsg:
@@ -228,15 +290,48 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.isError {
 			log.Printf("TUI error: %s", msg.message)
 		}
-		return m, tea.Tick(4*time.Second, func(_ time.Time) tea.Msg {
-			return clearNotificationMsg{}
-		})
+		// Error notifications persist until dismissed (Esc). Success auto-dismiss.
+		if !msg.isError {
+			return m, tea.Tick(4*time.Second, func(_ time.Time) tea.Msg {
+				return clearNotificationMsg{}
+			})
+		}
+		return m, nil
 
 	case clearNotificationMsg:
 		m.notification = ""
 		return m, nil
 
+	case applyResultMsg:
+		m.loading = false
+		m.loadingMsg = ""
+		m.switchDryRun = nil
+		if msg.err != nil {
+			return m, func() tea.Msg {
+				return notificationMsg{message: fmt.Sprintf("Apply failed: %s", msg.err.Error()), isError: true}
+			}
+		}
+		if msg.result != nil {
+			m.switchBackupPath = msg.result.BackupPath
+		}
+		// Track last applied CLI for quick undo
+		for _, c := range m.targetCLIs {
+			if c.ID == m.switchTargetCLIID {
+				m.lastUndoCLI = c.Name
+				break
+			}
+		}
+		return m, func() tea.Msg {
+			msg := "Profile activated successfully"
+			if m.lastUndoCLI != "" {
+				msg += " · Z to undo"
+			}
+			return notificationMsg{message: msg, isError: false}
+		}
+
 	case retryFetchResultMsg:
+		m.loading = false
+		m.loadingMsg = ""
 		var cmds []tea.Cmd
 		cmds = append(cmds, func() tea.Msg {
 			m.refreshData()
@@ -286,9 +381,46 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.notification != "" && key.Matches(msg, menuKeys.Esc) {
-		m.notification = ""
+	// Help overlay: any key dismisses
+	if m.showHelp {
+		m.showHelp = false
 		return m, nil
+	}
+
+	// Toggle help from any non-form view
+	if key.Matches(msg, menuKeys.Help) {
+		m.showHelp = true
+		return m, nil
+	}
+
+	// Quick undo (Z key) — restore last backup
+	if key.Matches(msg, menuKeys.Undo) && m.lastUndoCLI != "" {
+		m.notification = ""
+		cliName := m.lastUndoCLI
+		m.lastUndoCLI = ""
+		return m, func() tea.Msg {
+			bp, err := m.switchUseCases.RestoreLatest(cliName)
+			if err != nil {
+				return notificationMsg{message: fmt.Sprintf("Undo failed: %s", err.Error()), isError: true}
+			}
+			return notificationMsg{message: fmt.Sprintf("Undone: restored %s", bp), isError: false}
+		}
+	}
+
+	// Dismiss persistent notification on any key press
+	if m.notification != "" && !m.notificationIsMsg {
+		m.notification = ""
+		m.exitConfirm = false
+	}
+
+	// Exit confirm: any non-q key resets
+	if m.exitConfirm {
+		if key.Matches(msg, menuKeys.Quit) {
+			return m, tea.Quit
+		}
+		m.exitConfirm = false
+		m.notification = ""
+		// Fall through to normal handling
 	}
 
 	switch m.currentView {
@@ -297,7 +429,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, menuKeys.Up):
 			if m.menuSelected > 0 {
 				m.menuSelected--
-				if m.menuSelected == menuItemSwitch && len(m.providers) == 0 {
+				if m.menuSelected == menuItemSwitch && len(m.providers) == 0 && m.menuSelected > 0 {
 					m.menuSelected--
 				}
 			}
@@ -311,7 +443,13 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, menuKeys.Enter):
 			return m.handleMenuSelection()
 		case key.Matches(msg, menuKeys.Quit):
-			return m, tea.Quit
+			if m.exitConfirm {
+				return m, tea.Quit
+			}
+			m.exitConfirm = true
+			m.notification = "Press q again to quit, or any other key to cancel"
+			m.notificationIsMsg = false
+			return m, nil
 		}
 
 	case providerListView:
@@ -336,18 +474,25 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, menuKeys.Retry):
 			if m.selectedProviderID > 0 {
-				return m, func() tea.Msg {
-					diff, err := m.providerUseCases.RetryFetch(m.selectedProviderID)
-					return retryFetchResultMsg{diff: diff, err: err}
-				}
+				providerName := m.getProviderName(m.selectedProviderID)
+				return m, tea.Batch(
+					m.loadingCmd(fmt.Sprintf("Fetching models from %s...", providerName)),
+					func() tea.Msg {
+						diff, err := m.providerUseCases.RetryFetch(m.selectedProviderID)
+						return retryFetchResultMsg{diff: diff, err: err}
+					},
+				)
 			}
 		case key.Matches(msg, menuKeys.Test):
 			if m.selectedProviderID > 0 {
-				m.loading = true
-				return m, func() tea.Msg {
-					err := m.providerUseCases.TestConnectivity(m.selectedProviderID)
-					return testConnectivityResultMsg{err: err}
-				}
+				providerName := m.getProviderName(m.selectedProviderID)
+				return m, tea.Batch(
+					m.loadingCmd(fmt.Sprintf("Testing %s...", providerName)),
+					func() tea.Msg {
+						err := m.providerUseCases.TestConnectivity(m.selectedProviderID)
+						return testConnectivityResultMsg{err: err}
+					},
+				)
 			}
 		case key.Matches(msg, menuKeys.Edit):
 			if m.selectedProviderID > 0 {
@@ -381,28 +526,58 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.form = NewSelectProviderForm(providers, &m.switchProviderID)
 			return m, m.form.Init()
+		case key.Matches(msg, menuKeys.Edit):
+			if len(m.switchCLIBindings) == 0 {
+				return m, func() tea.Msg {
+					return notificationMsg{message: "No provider selected", isError: true}
+				}
+			}
+			editIdx := m.switchSelectedBindingIdx
+			if editIdx < 0 || editIdx >= len(m.switchCLIBindings) {
+				return m, func() tea.Msg {
+					return notificationMsg{message: "No provider selected", isError: true}
+				}
+			}
+			bp := m.switchCLIBindings[editIdx]
+			m.switchProviderID = bp.ProviderID
+			currentModels := parseRegisteredModels(bp.ModelMappings)
+			models, err := m.switchUseCases.GetModelsForProvider(bp.ProviderID)
+			if err != nil {
+				return m, func() tea.Msg {
+					return notificationMsg{message: fmt.Sprintf("Failed to get models: %s", err.Error()), isError: true}
+				}
+			}
+			m.switchEditModelsResult = EditModelsResult{}
+			m.form = NewEditModelsForm(models, currentModels, &m.switchEditModelsResult)
+			m.currentView = switchSelectModelsView
+			return m, m.form.Init()
 		case key.Matches(msg, menuKeys.Delete):
 			if len(m.switchCLIBindings) == 0 {
 				return m, func() tea.Msg {
 					return notificationMsg{message: "No providers to remove", isError: true}
 				}
 			}
-			m.currentView = switchProviderView
-			var bound []domain.Provider
-			for _, b := range m.switchCLIBindings {
-				p, err := m.providerUseCases.Get(b.ProviderID)
-				if err == nil {
-					bound = append(bound, p)
-				}
-			}
-			if len(bound) == 0 {
+			idx := m.switchSelectedBindingIdx
+			if idx < 0 || idx >= len(m.switchCLIBindings) {
 				return m, func() tea.Msg {
-					return notificationMsg{message: "No providers to remove", isError: true}
+					return notificationMsg{message: "No provider selected", isError: true}
 				}
 			}
-			m.form = NewSelectProviderToRemoveForm(bound, &m.switchProviderID)
-			m.switchRemoveMode = true
+			b := m.switchCLIBindings[idx]
+			m.switchProviderID = b.ProviderID
+			m.switchDeleteConfirm = false
+			providerName := b.ProviderName
+			m.currentView = deleteBindingConfirmView
+			m.form = NewDeleteConfirmForm(providerName, &m.switchDeleteConfirm)
 			return m, m.form.Init()
+		case key.Matches(msg, menuKeys.Up):
+			if m.switchSelectedBindingIdx > 0 {
+				m.switchSelectedBindingIdx--
+			}
+		case key.Matches(msg, menuKeys.Down):
+			if m.switchSelectedBindingIdx < len(m.switchCLIBindings)-1 {
+				m.switchSelectedBindingIdx++
+			}
 		case key.Matches(msg, menuKeys.Esc):
 			m.switchRemoveMode = false
 			m.switchInManageMode = false
@@ -458,21 +633,20 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.switchInManageMode {
 				pid = 0 // apply all
 			}
-			applyResult, err := m.switchUseCases.Apply(m.switchTargetCLIID, pid)
-			m.switchDryRun = nil
-			if err != nil {
-				return m, func() tea.Msg {
-					return notificationMsg{message: fmt.Sprintf("Apply failed: %s", err.Error()), isError: true}
+			cliName := ""
+			for _, c := range m.targetCLIs {
+				if c.ID == m.switchTargetCLIID {
+					cliName = c.Name
+					break
 				}
 			}
-			if applyResult != nil {
-				m.switchBackupPath = applyResult.BackupPath
-			} else {
-				m.switchBackupPath = ""
-			}
-			return m, func() tea.Msg {
-				return notificationMsg{message: "Profile activated successfully", isError: false}
-			}
+			return m, tea.Batch(
+				m.loadingCmd(fmt.Sprintf("Applying binding to %s...", cliName)),
+				func() tea.Msg {
+					result, err := m.switchUseCases.Apply(m.switchTargetCLIID, pid)
+					return applyResultMsg{result: result, err: err}
+				},
+			)
 		}
 
 	default:
@@ -576,6 +750,7 @@ func (m *model) reenterFormForView(view viewType) tea.Cmd {
 		m.switchRemoveMode = false
 		bindings, _ := m.switchUseCases.ListBindingsForCLI(m.switchTargetCLIID)
 		m.switchCLIBindings = bindings
+		m.switchSelectedBindingIdx = 0
 		return nil
 	case switchTargetCLIView:
 		m.switchTargetCLIID = 0
@@ -632,11 +807,11 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 	case addProviderView:
 		m.form = nil
 		m.currentView = providerListView
-		name := trimSpaces(m.addProviderResult.Name)
-		baseURL := trimSpaces(m.addProviderResult.BaseURL)
-		discoveryURL := trimSpaces(m.addProviderResult.DiscoveryURL)
-		apiKey := trimSpaces(m.addProviderResult.APIKey)
-		authToken := trimSpaces(m.addProviderResult.AuthToken)
+		name := strings.TrimSpace(m.addProviderResult.Name)
+		baseURL := strings.TrimSpace(m.addProviderResult.BaseURL)
+		discoveryURL := strings.TrimSpace(m.addProviderResult.DiscoveryURL)
+		apiKey := strings.TrimSpace(m.addProviderResult.APIKey)
+		authToken := strings.TrimSpace(m.addProviderResult.AuthToken)
 		apiType := domain.ApiType(m.addProviderResult.ApiType)
 
 		_, err := m.providerUseCases.Add(name, baseURL, discoveryURL, apiKey, authToken, apiType)
@@ -652,10 +827,10 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 	case editProviderView:
 		m.form = nil
 		m.currentView = providerListView
-		baseURL := trimSpaces(m.editProviderResult.BaseURL)
-		discoveryURL := trimSpaces(m.editProviderResult.DiscoveryURL)
-		apiKey := trimSpaces(m.editProviderResult.APIKey)
-		authToken := trimSpaces(m.editProviderResult.AuthToken)
+		baseURL := strings.TrimSpace(m.editProviderResult.BaseURL)
+		discoveryURL := strings.TrimSpace(m.editProviderResult.DiscoveryURL)
+		apiKey := strings.TrimSpace(m.editProviderResult.APIKey)
+		authToken := strings.TrimSpace(m.editProviderResult.AuthToken)
 		apiType := domain.ApiType(m.editProviderResult.ApiType)
 
 		if err := m.providerUseCases.Update(m.selectedProviderID, baseURL, discoveryURL, apiKey, authToken, apiType); err != nil {
@@ -786,42 +961,56 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 			m.switchExtractFn = extractFn
 			m.form = form
 		} else {
-			// pi/OpenCode/Copilot: skip env mapping, go to model selection
-			// These CLIs don't use env var → model mapping; they list models directly.
-			// Store only _registered metadata so the mutator knows which models to include.
-			registered := make([]string, 0, len(models))
-			for _, mdl := range models {
-				registered = append(registered, mdl.ModelName)
-			}
-			m.switchRegisteredModels = registered
+			// pi/OpenCode/Copilot: show model multi-select form
+			m.currentView = switchSelectModelsView
+			m.switchRegisteredModels = nil
+			m.form = NewSelectModelsForm(models, &m.switchRegisterResult)
+			return m, m.form.Init()
+		}
+		return m, m.form.Init()
 
-			// Mapping just stores _registered metadata — no env var keys needed.
-			mappings := map[string]string{"_registered": strings.Join(registered, ",")}
+	case switchSelectModelsView:
+		m.form = nil
+		// Detect if this is an edit (from manage bindings) or initial selection
+		selected := m.switchRegisterResult.RegisteredModels
+		custom := m.switchEditModelsResult.CustomModels
+		if len(custom) > 0 {
+			parts := strings.Split(custom, ",")
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					selected = append(selected, p)
+				}
+			}
+		}
+		m.switchRegisteredModels = selected
+		if len(m.switchRegisteredModels) > 0 {
+			mappings := map[string]string{"_registered": strings.Join(m.switchRegisteredModels, ",")}
 			if err := m.switchUseCases.BindProfile(m.switchTargetCLIID, m.switchProviderID, mappings); err != nil {
 				return m, func() tea.Msg {
 					return notificationMsg{message: fmt.Sprintf("Bind failed: %s", err.Error()), isError: true}
 				}
 			}
-
-			m.currentView = switchAdvancedConfigView
-
-			m.switchModelMetadataSummary = buildMetadataSummary(registered, m.switchProviderID, m.switchUseCases)
-			return m, nil
 		}
-		return m, m.form.Init()
+		m.switchModelMetadataSummary = buildMetadataSummary(m.switchRegisteredModels, m.switchProviderID, m.switchUseCases)
+		// Regenerate config so changes take effect immediately
+		if _, err := m.switchUseCases.Apply(m.switchTargetCLIID, 0); err != nil {
+			log.Printf("config regenerate after model selection failed: %v", err)
+		}
+		m.currentView = switchAdvancedConfigView
+		return m, nil
 
 	case switchMapModelsView:
 		m.form = nil
 		result := m.switchExtractFn()
 
+		// Save mappings and derive registered models from them
 		if err := m.switchUseCases.BindProfile(m.switchTargetCLIID, m.switchProviderID, result.Mappings); err != nil {
 			return m, func() tea.Msg {
 				return notificationMsg{message: fmt.Sprintf("Bind failed: %s", err.Error()), isError: true}
 			}
 		}
 
-		// Auto-register all non-empty model IDs from mappings — no redundant checkbox step.
-		// Collect unique model IDs from mapping values (variant names like "model:variant").
 		seen := make(map[string]bool)
 		var registered []string
 		for _, v := range result.Mappings {
@@ -832,32 +1021,35 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		}
 		m.switchRegisteredModels = registered
 
-		// Store _registered list in bindings
-		if len(registered) > 0 {
-			currentMappings, err := m.switchUseCases.GetBoundModels(m.switchTargetCLIID)
-			if err == nil {
-				updated := make(map[string]string, len(currentMappings)+1)
-				for k, v := range currentMappings {
-					updated[k] = v
-				}
-				updated["_registered"] = strings.Join(registered, ",")
-				_ = m.switchUseCases.BindProfile(m.switchTargetCLIID, m.switchProviderID, updated)
-			}
-		}
-
-		// Build model metadata summary and go to advanced config review
 		m.switchModelMetadataSummary = buildMetadataSummary(registered, m.switchProviderID, m.switchUseCases)
 		m.currentView = switchAdvancedConfigView
 		return m, nil
 
 	case manageCLIView:
 		m.form = nil
-		m.currentView = dashboardView
-		return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
+		if m.selectedCLIID == 0 {
+			m.currentView = dashboardView
+			return m, nil
+		}
+		var cli *domain.TargetCLI
+		for i := range m.targetCLIs {
+			if m.targetCLIs[i].ID == m.selectedCLIID {
+				cli = &m.targetCLIs[i]
+				break
+			}
+		}
+		if cli == nil {
+			m.currentView = dashboardView
+			return m, nil
+		}
+		m.currentView = editCLIPathView
+		m.editCLIPathResult = EditCLIPathResult{}
+		m.form = NewEditCLIPathForm(cli, &m.editCLIPathResult)
+		return m, m.form.Init()
 
 	case editCLIPathView:
 		m.form = nil
-		m.currentView = manageCLIView
+		m.currentView = dashboardView
 		if m.editCLIPathResult.ConfigPath != "" {
 			if err := m.switchUseCases.UpdateCLIConfigPath(m.editCLIPathResult.CLIID, m.editCLIPathResult.ConfigPath); err != nil {
 				return m, func() tea.Msg {
@@ -960,80 +1152,227 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 }
 
 var (
+	logo = []string{
+		`╭──────────────────────────╮`,
+		`│       ◆  aimux  ◆        │`,
+		`│    AI Multiplexer        │`,
+		`╰──────────────────────────╯`,
+	}
+
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("255")).
+			Foreground(aimuxT.Accent).
 			Padding(0, 2)
 
-	viewPadding = lipgloss.NewStyle().PaddingTop(2)
+	viewPadding = lipgloss.NewStyle().Padding(1, 2)
 
 	notifOKStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("236")).
-			Foreground(lipgloss.Color("42")).
+			Background(aimuxT.BgBase).
+			Foreground(aimuxT.Green).
 			Padding(0, 2).
 			Bold(true)
 
 	notifErrStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("236")).
-			Foreground(lipgloss.Color("167")).
+			Background(aimuxT.BgBase).
+			Foreground(aimuxT.Red).
 			Padding(0, 2).
 			Bold(true)
 )
 
+func (m *model) renderDashboardSummary() string {
+	var b strings.Builder
+
+	activeProv := 0
+	errorProv := 0
+	for _, p := range m.providers {
+		switch p.Status {
+		case "active":
+			activeProv++
+		case "error":
+			errorProv++
+		}
+	}
+
+	activeCLIs := 0
+	cliWithProviders := make(map[int64]bool)
+	for _, am := range m.activeMultiplexes {
+		if am.TargetCLIID != 0 {
+			cliWithProviders[am.TargetCLIID] = true
+		}
+	}
+	for _, cli := range m.targetCLIs {
+		if cliWithProviders[cli.ID] {
+			activeCLIs++
+		}
+	}
+	inactiveCLIs := len(m.targetCLIs) - activeCLIs
+
+	provStr := fmt.Sprintf("%d active", activeProv)
+	if errorProv > 0 {
+		provStr += fmt.Sprintf(", %d error", errorProv)
+	}
+
+	// Build a bordered summary box
+	summaryStyle := lipgloss.NewStyle().
+		Foreground(aimuxT.TextSecondary).
+		Padding(0, 2)
+
+	b.WriteString(aimuxT.Help.Render("Summary"))
+	b.WriteString("\n")
+	b.WriteString(summaryStyle.Render(fmt.Sprintf("Providers: %s", provStr)))
+	b.WriteString("\n")
+	b.WriteString(summaryStyle.Render(fmt.Sprintf("CLIs:      %d active, %d inactive", activeCLIs, inactiveCLIs)))
+	b.WriteString("\n\n")
+
+	return b.String()
+}
+
 func (m *model) View() string {
+	m.syncSwitchStep()
+
+	// Wrap form views with stepper for switch flow steps.
 	if m.form != nil {
-		return m.form.View()
+		content := m.form.View()
+		if m.switchTotalSteps > 0 {
+			content = viewPadding.Render(m.renderSwitchStepper()) + "\n" + content
+		}
+		return content
+	}
+
+	if m.loading {
+		spin := m.spinner.View()
+		msg := m.loadingMsg
+		if msg == "" {
+			msg = "Working..."
+		}
+		bottom := aimuxT.Help.Render(fmt.Sprintf("%s %s", spin, msg))
+		return viewPadding.Render(bottom)
 	}
 
 	var content string
 	switch m.currentView {
 	case dashboardView:
-		table := RenderTable(m.providers, m.activeMultiplexes, m.targetCLIs, m.width)
+		summary := m.renderDashboardSummary()
 		menu := RenderMenu(m.menuSelected, len(m.providers) > 0)
-		title := titleStyle.Render("aimux")
-		content = lipgloss.JoinVertical(lipgloss.Left, title, table, menu)
+		// Render logo: first/last line in accent (border), middle lines in secondary
+		borderStyle := lipgloss.NewStyle().Foreground(aimuxT.Accent).Padding(0, 2)
+		contentStyle := lipgloss.NewStyle().Foreground(aimuxT.TextSecondary).Padding(0, 2)
+		logoLines := []string{
+			borderStyle.Render(logo[0]),
+			contentStyle.Render(logo[1]),
+			contentStyle.Render(logo[2]),
+			borderStyle.Render(logo[3]),
+		}
+		logoStr := lipgloss.JoinVertical(lipgloss.Left, logoLines...)
+
+		// Welcome message on first run (no providers configured)
+		var welcome string
+		if len(m.providers) == 0 {
+			welcomeBox := lipgloss.NewStyle().
+				Foreground(aimuxT.TextSecondary).
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(aimuxT.Accent).
+				Padding(1, 2).
+				Render(
+					lipgloss.JoinVertical(lipgloss.Left,
+						lipgloss.NewStyle().Bold(true).Foreground(aimuxT.Accent).Render("Welcome to aimux! 🎯"),
+						"",
+						"Centralize your AI provider credentials and switch between",
+						"providers for Claude Code, OpenCode, Codex, Copilot, and pi.",
+						"",
+						fmt.Sprintf("Press Enter on %s to add your first provider.",
+							lipgloss.NewStyle().Bold(true).Foreground(aimuxT.Accent).Render("Manage Providers")),
+					),
+				)
+			welcome = "\n" + welcomeBox + "\n"
+		}
+
+		content = lipgloss.JoinVertical(lipgloss.Left, logoStr, summary, welcome, menu)
 		content = viewPadding.Render(content)
 
 	case providerListView:
-		content = RenderProviderList(m.providers, m.selectedProviderID, m.width)
+		content = RenderProviderList(m.providers, m.selectedProviderID, m.width, m.allModels, m.activeMultiplexes)
 		content = viewPadding.Render(content)
 
 	case switchManageBindingsView:
 		content = m.renderManageBindings()
+		content = lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), content)
 		content = viewPadding.Render(content)
 
 	case switchAdvancedConfigView:
 		content = m.renderAdvancedConfigReview()
+		content = lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), content)
 		content = viewPadding.Render(content)
 
 	case switchConfirmationView:
 		if m.switchDryRun != nil {
-			envBlock := ""
+			var sb strings.Builder
+			sb.WriteString(aimuxT.Title.Render("Dry-run Preview"))
+			sb.WriteString("\n\n")
+			sb.WriteString(aimuxT.ItemDesc.Render(fmt.Sprintf("Target CLI:  %s", m.switchDryRun.CLIName)))
+			sb.WriteString("\n")
+			sb.WriteString(aimuxT.ItemDesc.Render(fmt.Sprintf("Config:      %s", m.switchDryRun.ConfigPath)))
+			sb.WriteString("\n\n")
+
+			// New env vars to be written
+			sb.WriteString(aimuxT.Help.Render("New configuration:"))
+			sb.WriteString("\n")
 			for k, v := range m.switchDryRun.EnvVars {
 				if v != "" {
-					envBlock += fmt.Sprintf("\n    %s = %s", k, v)
+					sb.WriteString(aimuxT.ItemDesc.Render(fmt.Sprintf("  %s = %s", k, v)))
+					sb.WriteString("\n")
 				}
 			}
-			content = fmt.Sprintf(
-				"\n\n  Dry-run — the following will be applied:\n\n  Target CLI:  %s\n  Config:      %s\n  Env vars:%s\n\n  %s\n",
-				m.switchDryRun.CLIName, m.switchDryRun.ConfigPath, envBlock,
-				helpStyle.Render("Enter = Apply · Esc = Abort"),
-			)
-		} else {
-			content = fmt.Sprintf(
-				"\n\n  Profile activated successfully!\n\n  The config has been written and multiplex is active.\n",
-			)
-			if m.switchBackupPath != "" {
-				content += fmt.Sprintf("\n  Backup saved to:\n  %s\n", m.switchBackupPath)
+
+			// Diff: show current config content if available
+			if m.switchDryRunCurrentConfig != "" {
+				sb.WriteString("\n")
+				sb.WriteString(aimuxT.Help.Render("Current config:"))
+				sb.WriteString("\n")
+				lines := strings.Split(m.switchDryRunCurrentConfig, "\n")
+				maxLines := 15
+				if len(lines) > maxLines {
+					lines = lines[:maxLines]
+					lines = append(lines, "  ...")
+				}
+				for _, line := range lines {
+					sb.WriteString(aimuxT.ItemDesc.Render(fmt.Sprintf("  │ %s", line)))
+					sb.WriteString("\n")
+				}
 			}
-			content += fmt.Sprintf("\n  %s\n\n",
-				helpStyle.Render("Press Enter or Esc to return to dashboard"),
-			)
+
+			sb.WriteString("\n")
+			sb.WriteString(aimuxT.Help.Render("Enter = Apply · Esc = Abort"))
+			content = viewPadding.Render(sb.String())
+		} else {
+			var sb strings.Builder
+			sb.WriteString(aimuxT.Title.Render("Profile Activated"))
+			sb.WriteString("\n\n")
+			sb.WriteString(aimuxT.ItemDesc.Render("The config has been written and multiplex is active."))
+			sb.WriteString("\n")
+			if m.switchBackupPath != "" {
+				sb.WriteString(aimuxT.ItemDesc.Render(fmt.Sprintf("Backup saved to:")))
+				sb.WriteString("\n")
+				sb.WriteString(aimuxT.ItemDesc.Render(fmt.Sprintf("  %s", m.switchBackupPath)))
+				sb.WriteString("\n")
+			}
+			sb.WriteString("\n")
+			sb.WriteString(aimuxT.Help.Render("Press Enter or Esc to return to dashboard"))
+			content = viewPadding.Render(sb.String())
 		}
-		content = viewPadding.Render(content)
 
 	default:
 		content = "Loading..."
+	}
+
+	// Prepend stepper for other switch views not covered above (already added for manage/advancedConfig/confirmation)
+	if m.switchTotalSteps > 0 && content != "" {
+		switch m.currentView {
+		case switchTargetCLIView, switchProviderView, switchMapModelsView, switchSelectModelsView:
+			// These use forms and are handled above.
+		default:
+			// Already handled above for manageView/advancedConfig/confirmation.
+		}
 	}
 
 	if m.notification != "" {
@@ -1042,7 +1381,7 @@ func (m *model) View() string {
 			style = notifOKStyle
 		}
 		bar := style.Width(m.width).Render("  " + m.notification)
-		content = lipgloss.JoinVertical(lipgloss.Center, content, "\n", bar)
+		content = lipgloss.JoinVertical(lipgloss.Left, content, "\n", bar)
 	}
 
 	return content
@@ -1070,6 +1409,11 @@ func (m *model) refreshData() tea.Msg {
 		m.targetCLIs = clis
 	}
 
+	allModels, err := m.switchUseCases.ListAllModels()
+	if err == nil {
+		m.allModels = allModels
+	}
+
 	return DashboardRefreshMsg{}
 }
 
@@ -1086,6 +1430,8 @@ func (m *model) previousView() viewType {
 		if m.switchInManageMode {
 			return switchManageBindingsView
 		}
+		return switchProviderView
+	case switchSelectModelsView:
 		return switchProviderView
 	case switchRegisterModelsView:
 		return switchMapModelsView
@@ -1198,6 +1544,28 @@ func (m *model) prevCLIID(current int64) int64 {
 	return 0
 }
 
+// parseRegisteredModels extracts model list from a binding's model_mappings JSON.
+func parseRegisteredModels(mappingsJSON string) []string {
+	var mps map[string]string
+	if err := json.Unmarshal([]byte(mappingsJSON), &mps); err != nil {
+		return nil
+	}
+	if reg, ok := mps["_registered"]; ok && reg != "" {
+		return strings.Split(reg, ",")
+	}
+	// Fallback: return unique mapping values (skip _ keys)
+	seen := make(map[string]bool)
+	var models []string
+	for k, v := range mps {
+		if strings.HasPrefix(k, "_") || v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		models = append(models, v)
+	}
+	return models
+}
+
 // resetSwitchState clears all switch-related fields to avoid stale state
 // when returning to the dashboard or starting a new switch flow.
 func (m *model) resetSwitchState() {
@@ -1206,6 +1574,8 @@ func (m *model) resetSwitchState() {
 	m.switchEnvVars = nil
 	m.switchExtractFn = nil
 	m.switchRegisteredModels = nil
+	m.switchRegisterResult = RegisterModelsResult{}
+	m.switchEditModelsResult = EditModelsResult{}
 	m.switchBackupPath = ""
 	m.switchDryRun = nil
 	m.switchModelMetadataSummary = nil
@@ -1214,7 +1584,11 @@ func (m *model) resetSwitchState() {
 	m.switchCLIBindings = nil
 	m.switchRemoveMode = false
 	m.switchDeleteConfirm = false
+	m.switchSelectedBindingIdx = 0
 	m.switchProviderModels = nil
+	m.switchStep = 0
+	m.switchTotalSteps = 0
+	m.switchStepLabel = ""
 }
 
 func (m *model) proceedToDryRun() (tea.Model, tea.Cmd) {
@@ -1232,6 +1606,16 @@ func (m *model) proceedToDryRun() (tea.Model, tea.Cmd) {
 	}
 	m.switchDryRun = dryRun
 	m.switchBackupPath = ""
+
+	// Read current config for diff preview
+	m.switchDryRunCurrentConfig = ""
+	if dryRun != nil && dryRun.ConfigPath != "" {
+		data, err := os.ReadFile(dryRun.ConfigPath)
+		if err == nil && len(data) > 0 {
+			m.switchDryRunCurrentConfig = string(data)
+		}
+	}
+
 	m.currentView = switchConfirmationView
 	return m, nil
 }
@@ -1243,6 +1627,7 @@ func (m *model) enterManageBindingsView() (tea.Model, tea.Cmd) {
 	m.switchCLIBindings = bindings
 	m.switchRemoveMode = false
 	m.switchInManageMode = len(bindings) > 0
+	m.switchSelectedBindingIdx = 0
 	m.currentView = switchManageBindingsView
 	return m, nil
 }
@@ -1258,12 +1643,19 @@ func (m *model) renderManageBindings() string {
 			break
 		}
 	}
-	b.WriteString(fmt.Sprintf("\n  Provider Bindings — %s\n\n", cliName))
+
+	// Title
+	b.WriteString(aimuxT.Title.Render("Provider Bindings — " + cliName))
+	b.WriteString("\n\n")
 
 	if len(m.switchCLIBindings) == 0 {
-		b.WriteString("  No providers bound yet.\n")
+		b.WriteString("  No providers bound yet.")
+		b.WriteString("\n")
 	} else {
 		for i, bp := range m.switchCLIBindings {
+			selected := i == m.switchSelectedBindingIdx
+
+			// Build the model mappings string
 			mappings := ""
 			var mps map[string]string
 			if err := json.Unmarshal([]byte(bp.ModelMappings), &mps); err == nil {
@@ -1278,40 +1670,66 @@ func (m *model) renderManageBindings() string {
 				} else if reg, ok := mps["_registered"]; ok {
 					mappings = reg
 				}
+				if len(mappings) > 60 {
+					mappings = mappings[:57] + "..."
+				}
 			}
-			b.WriteString(fmt.Sprintf("  %d. %s\n", i+1, bp.ProviderName))
-			if mappings != "" && len(mappings) > 60 {
-				mappings = mappings[:57] + "..."
+
+			titleStyle := aimuxT.ItemTitle
+			detailStyle := aimuxT.ItemDesc
+			if selected {
+				titleStyle = aimuxT.SelTitle
+				detailStyle = aimuxT.SelDesc
 			}
+
+			// Render title line
+			b.WriteString(titleStyle.Render(" " + bp.ProviderName))
+			b.WriteString("\n")
+
+			// Render description lines
 			if mappings != "" {
-				b.WriteString(fmt.Sprintf("     Models: %s\n", mappings))
+				b.WriteString(detailStyle.Render(fmt.Sprintf("  %s", mappings)))
+				b.WriteString("\n")
 			}
-			b.WriteString(fmt.Sprintf("     Bound: %s\n", bp.ActivatedAt))
+			b.WriteString(detailStyle.Render(fmt.Sprintf("  %s", bp.ActivatedAt)))
+			b.WriteString("\n")
+
+			if i < len(m.switchCLIBindings)-1 {
+				spacer := aimuxT.Inactive.Copy().
+					Foreground(aimuxT.TextDim).
+					Render("  ")
+				b.WriteString(spacer)
+				b.WriteString("\n")
+			}
 		}
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("[A] Add provider  [D] Remove  [Enter] Apply all  [Esc] Back"))
+	b.WriteString(aimuxT.Help.Render("↑/↓ navigate · a add · d remove · e edit models · Enter apply all · Esc back"))
 	b.WriteString("\n")
 	return b.String()
 }
 
 func (m *model) renderAdvancedConfigReview() string {
 	var b strings.Builder
-	b.WriteString("\n  Advanced Model Configuration\n\n")
+	b.WriteString(aimuxT.Title.Render("Advanced Model Configuration"))
+	b.WriteString("\n\n")
 	b.WriteString(fmt.Sprintf("  Registered models: %d\n\n", len(m.switchRegisteredModels)))
 
 	if len(m.switchModelMetadataSummary) == 0 {
-		b.WriteString("  No advanced metadata available for these models.\n")
-		b.WriteString("  Default settings will be used.\n")
+		b.WriteString(aimuxT.ItemDesc.Render("  No advanced metadata available for these models."))
+		b.WriteString("\n")
+		b.WriteString(aimuxT.ItemDesc.Render("  Default settings will be used."))
+		b.WriteString("\n")
 	} else {
 		for _, line := range m.switchModelMetadataSummary {
-			b.WriteString("  " + line + "\n")
+			b.WriteString(aimuxT.ItemDesc.Render("  " + line))
+			b.WriteString("\n")
 		}
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("Enter = Proceed to apply · Esc = Back to model selection"))
+	b.WriteString(aimuxT.Help.Render("Enter = Proceed to apply · Esc = Back to model selection"))
 	return b.String()
 }
 
@@ -1360,23 +1778,117 @@ func buildMetadataSummary(registeredModels []string, providerID int64, useCases 
 	return lines
 }
 
+// syncSwitchStep sets the stepper state based on the current switch view.
+func (m *model) syncSwitchStep() {
+	switch m.currentView {
+	case switchTargetCLIView:
+		m.switchStep = switchStepCLI
+		m.switchTotalSteps = 5
+		m.switchStepLabel = switchStepLabels[switchStepCLI]
+	case switchProviderView:
+		m.switchStep = switchStepProvider
+		m.switchTotalSteps = 5
+		m.switchStepLabel = switchStepLabels[switchStepProvider]
+	case switchMapModelsView:
+		m.switchStep = switchStepMapModels
+		m.switchTotalSteps = 5
+		m.switchStepLabel = switchStepLabels[switchStepMapModels]
+	case switchSelectModelsView:
+		m.switchStep = switchStepMapModels
+		m.switchTotalSteps = 4
+		m.switchStepLabel = "Select Models"
+	case switchAdvancedConfigView:
+		if m.switchUsesEnvMapping {
+			m.switchStep = switchStepReviewConfig
+			m.switchTotalSteps = 5
+			m.switchStepLabel = switchStepLabels[switchStepReviewConfig]
+		} else {
+			m.switchStep = switchStepReviewConfig - 1
+			m.switchTotalSteps = 4
+			m.switchStepLabel = "Review Configuration"
+		}
+	case switchConfirmationView:
+		if m.switchUsesEnvMapping {
+			m.switchStep = switchStepConfirm
+			m.switchTotalSteps = 5
+			m.switchStepLabel = switchStepLabels[switchStepConfirm]
+		} else {
+			m.switchStep = switchStepConfirm - 1
+			m.switchTotalSteps = 4
+			m.switchStepLabel = "Confirm & Apply"
+		}
+	case switchManageBindingsView:
+		m.switchStep = 0
+		m.switchTotalSteps = 0
+		m.switchStepLabel = ""
+	default:
+		// Reset for non-switch views
+		m.switchStep = 0
+		m.switchTotalSteps = 0
+		m.switchStepLabel = ""
+	}
+}
+
+// renderSwitchStepper renders a compact step indicator for the Switch flow.
+func (m *model) renderSwitchStepper() string {
+	if m.switchTotalSteps == 0 {
+		return ""
+	}
+
+	dotDone := aimuxT.SelTitle.Render("●")
+	dotEmpty := aimuxT.Inactive.Render("○")
+	dotCurrent := lipgloss.NewStyle().
+		Foreground(aimuxT.AccentAlt).
+		Bold(true).
+		Render("◉")
+
+	var dots []string
+	for i := 1; i <= m.switchTotalSteps; i++ {
+		if i < m.switchStep {
+			dots = append(dots, dotDone)
+		} else if i == m.switchStep {
+			dots = append(dots, dotCurrent)
+		} else {
+			dots = append(dots, dotEmpty)
+		}
+	}
+	dotStr := strings.Join(dots, " ")
+
+	title := fmt.Sprintf("Step %d/%d: %s", m.switchStep, m.switchTotalSteps, m.switchStepLabel)
+	titleStr := aimuxT.Help.Render(title)
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		titleStr,
+		"  "+dotStr,
+	)
+}
+
+func (m *model) renderHelpOverlay() string {
+	return lipgloss.JoinVertical(lipgloss.Left,
+		aimuxT.Title.Render("Help & Shortcuts"),
+		"",
+		aimuxT.ItemDesc.Render("  ↑/↓ k/j  — Navigate list"),
+		aimuxT.ItemDesc.Render("  Enter    — Select / Confirm"),
+		aimuxT.ItemDesc.Render("  Esc      — Go back / Abort"),
+		aimuxT.ItemDesc.Render("  a        — Add provider"),
+		aimuxT.ItemDesc.Render("  d        — Delete / Remove"),
+		aimuxT.ItemDesc.Render("  e        — Edit models"),
+		aimuxT.ItemDesc.Render("  r        — Retry model fetch"),
+		aimuxT.ItemDesc.Render("  t        — Test connectivity"),
+		aimuxT.ItemDesc.Render("  ?        — Toggle this help"),
+		aimuxT.ItemDesc.Render("  q / Ctrl+C  — Quit"),
+		"",
+		aimuxT.Help.Render("Press any key to close"),
+	)
+}
+
 func (m *model) isSingleSelectForm() bool {
 	return m.currentView == switchTargetCLIView ||
 		m.currentView == switchProviderView ||
+		m.currentView == switchMapModelsView ||
+		m.currentView == switchSelectModelsView ||
 		m.currentView == manageCLIView ||
 		m.currentView == deleteBindingConfirmView ||
 		m.currentView == restoreCLIView ||
 		m.currentView == restoreBackupView
-}
-
-func trimSpaces(s string) string {
-	start := 0
-	end := len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
-		end--
-	}
-	return s[start:end]
 }

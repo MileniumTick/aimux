@@ -403,6 +403,59 @@ func TestClaudeSettingsJSON_NoMillionContext(t *testing.T) {
 	}
 }
 
+func TestClaudeSettingsJSON_EnsureAnthropicPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"empty URL", "", ""},
+		{"no path", "https://api.example.com", "https://api.example.com/anthropic"},
+		{"trailing slash", "https://api.example.com/", "https://api.example.com/anthropic"},
+		{"v1 path", "https://api.example.com/v1", "https://api.example.com/anthropic"},
+		{"already anthropic", "https://api.example.com/anthropic", "https://api.example.com/anthropic"},
+		{"custom port", "http://localhost:8080/v1", "http://localhost:8080/anthropic"},
+		{"long path", "https://proxy.istmo.center/anthropic/v1", "https://proxy.istmo.center/anthropic"},
+		{"auth in URL", "https://user:pass@api.example.com/v1", "https://user:pass@api.example.com/anthropic"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ensureClaudeBaseURL(tt.input)
+			if got != tt.expected {
+				t.Errorf("ensureClaudeBaseURL(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestClaudeSettingsJSON_ANTHROPIC_BASE_URL_Path(t *testing.T) {
+	// When BaseURL has a non-/anthropic path, the mutator should normalize it.
+	m := &ClaudeSettingsJSON{}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+
+	mappings := map[string]string{
+		"ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4",
+	}
+
+	provider := defaultClaudeProvider()
+	provider.BaseURL = "https://api.test.com/v1"
+
+	if _, err := m.Mutate(path, mappings, provider, defaultClaudeConfig()); err != nil {
+		t.Fatalf("Mutate failed: %v", err)
+	}
+
+	content, _ := os.ReadFile(path)
+	var root map[string]any
+	json.Unmarshal(content, &root)
+	env := root["env"].(map[string]any)
+
+	if env["ANTHROPIC_BASE_URL"] != "https://api.test.com/anthropic" {
+		t.Errorf("expected 'https://api.test.com/anthropic', got %v", env["ANTHROPIC_BASE_URL"])
+	}
+}
+
 func TestClaudeSettingsJSON_NoMetadataFallback(t *testing.T) {
 	// Without _model_metadata, no suffix is applied (graceful degradation).
 	m := &ClaudeSettingsJSON{}

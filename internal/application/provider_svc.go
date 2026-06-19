@@ -82,24 +82,29 @@ func (uc *ProviderUseCases) Delete(id int64) error {
 }
 
 // FetchModels fetches models from the provider's API, branching on apiType.
-// Uses discoveryURL for model list endpoint when set, baseURL otherwise.
+// discoveryURL is the full URL to the models endpoint (no path appended).
+// baseURL needs /v1/models appended (or /v1beta/models for Google).
 func (uc *ProviderUseCases) FetchModels(providerID int64, baseURL, discoveryURL, authToken string, apiType domain.ApiType) error {
+	isDiscovery := discoveryURL != ""
 	fetchURL := baseURL
-	if discoveryURL != "" {
+	if isDiscovery {
 		fetchURL = discoveryURL
 	}
 	switch apiType {
 	case domain.ApiTypeAnthropic:
-		return uc.fetchAnthropicModels(providerID, fetchURL, authToken)
+		return uc.fetchAnthropicModels(providerID, fetchURL, authToken, isDiscovery)
 	case domain.ApiTypeGoogle:
-		return uc.fetchGoogleModels(providerID, fetchURL, authToken)
+		return uc.fetchGoogleModels(providerID, fetchURL, authToken, isDiscovery)
 	default:
-		return uc.fetchOpenAIModels(providerID, fetchURL, authToken)
+		return uc.fetchOpenAIModels(providerID, fetchURL, authToken, isDiscovery)
 	}
 }
 
-func (uc *ProviderUseCases) fetchOpenAIModels(providerID int64, baseURL, authToken string) error {
-	url := resolveBaseURL(baseURL) + "/v1/models"
+func (uc *ProviderUseCases) fetchOpenAIModels(providerID int64, baseURL, authToken string, isDiscovery bool) error {
+	url := baseURL
+	if !isDiscovery {
+		url = resolveBaseURL(baseURL) + "/v1/models"
+	}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
@@ -124,8 +129,11 @@ func (uc *ProviderUseCases) fetchOpenAIModels(providerID int64, baseURL, authTok
 	return nil
 }
 
-func (uc *ProviderUseCases) fetchAnthropicModels(providerID int64, baseURL, authToken string) error {
-	url := resolveBaseURL(baseURL) + "/v1/models"
+func (uc *ProviderUseCases) fetchAnthropicModels(providerID int64, baseURL, authToken string, isDiscovery bool) error {
+	url := baseURL
+	if !isDiscovery {
+		url = resolveBaseURL(baseURL) + "/v1/models"
+	}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
@@ -151,8 +159,11 @@ func (uc *ProviderUseCases) fetchAnthropicModels(providerID int64, baseURL, auth
 	return nil
 }
 
-func (uc *ProviderUseCases) fetchGoogleModels(providerID int64, baseURL, authToken string) error {
-	url := resolveBaseURL(baseURL) + "/v1beta/models?key=" + authToken
+func (uc *ProviderUseCases) fetchGoogleModels(providerID int64, baseURL, authToken string, isDiscovery bool) error {
+	url := baseURL
+	if !isDiscovery {
+		url = resolveBaseURL(baseURL) + "/v1beta/models"
+	}
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
@@ -160,6 +171,7 @@ func (uc *ProviderUseCases) fetchGoogleModels(providerID int64, baseURL, authTok
 
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", fetchUserAgent)
+	req.Header.Set("X-Goog-Api-Key", authToken)
 
 	modelNames, body, err := uc.doModelFetch(req)
 	if err != nil {
@@ -210,6 +222,11 @@ func (uc *ProviderUseCases) doModelFetch(req *http.Request) ([]string, []byte, e
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read response body: %w", err)
+	}
+
+	// If response is HTML (starts with <), the URL is probably wrong
+	if len(body) > 0 && body[0] == '<' {
+		return nil, nil, fmt.Errorf("endpoint returned HTML instead of JSON — check the URL")
 	}
 
 	modelNames, err := parseModelsResponse(body)

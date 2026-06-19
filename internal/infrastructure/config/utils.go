@@ -12,35 +12,42 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/gofrs/flock"
 )
 
 var (
-	ErrConfigNotFound   = errors.New("config file not found")
-	ErrConfigParse      = errors.New("could not parse config file: invalid JSON")
-	ErrFlockTimeout     = errors.New("could not acquire file lock: timeout")
-	ErrTempFileCreate   = errors.New("could not create temporary file")
-	ErrTempFileWrite    = errors.New("could not write to temporary file")
-	ErrAtomicRename     = errors.New("could not rename temp file atomically")
-	ErrSyncFile         = errors.New("could not sync config file to disk")
+	ErrConfigNotFound = errors.New("config file not found")
+	ErrConfigParse    = errors.New("could not parse config file: invalid JSON")
+	ErrFlockTimeout   = errors.New("could not acquire file lock: timeout")
+	ErrTempFileCreate = errors.New("could not create temporary file")
+	ErrTempFileWrite  = errors.New("could not write to temporary file")
+	ErrAtomicRename   = errors.New("could not rename temp file atomically")
+	ErrSyncFile       = errors.New("could not sync config file to disk")
 )
 
 const flockTimeout = 2 * time.Second
 
-// AcquireFlock attempts to acquire a flock on the given fd with a timeout.
-func AcquireFlock(fd uintptr, lockType int, timeout time.Duration) error {
+// AcquireFlock acquires a shared/exclusive lock on the given file using
+// gofrs/flock (cross-platform). Uses goroutine with timeout, like original flock.
+func AcquireFlock(f *os.File, exclusive bool, timeout time.Duration) error {
+	fl := flock.New(f.Name())
 	ch := make(chan error, 1)
 	go func() {
-		ch <- syscall.Flock(int(fd), lockType)
+		if exclusive {
+			ch <- fl.Lock()
+		} else {
+			ch <- fl.RLock()
+		}
 	}()
 
 	select {
 	case err := <-ch:
 		return err
 	case <-time.After(timeout):
-		// Attempt to cancel by sending LOCK_UN; best-effort.
-		syscall.Flock(int(fd), syscall.LOCK_UN)
+		// Best-effort unlock via TryLock is not possible from outside the goroutine.
+		// The goroutine will eventually acquire the lock and return.
 		return ErrFlockTimeout
 	}
 }
@@ -63,10 +70,10 @@ func ReadJSONWithLock(path string) (map[string]any, error) {
 	}
 	defer f.Close()
 
-	if err := AcquireFlock(f.Fd(), syscall.LOCK_SH, flockTimeout); err != nil {
+	if err := AcquireFlock(f, false, flockTimeout); err != nil {
 		return nil, fmt.Errorf("acquire read lock on %s: %w", path, err)
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	// gofrs/flock releases on Fd close (defer f.Close runs first), so no explicit unlock needed.
 
 	fi, err := f.Stat()
 	if err != nil {

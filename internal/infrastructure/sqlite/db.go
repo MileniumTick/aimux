@@ -211,8 +211,14 @@ func MigrationMultiProvider(db *sql.DB) error {
 		return nil // already migrated
 	}
 
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	// Create new table with composite PK
-	if _, err := db.Exec(`
+	if _, err := tx.Exec(`
 		CREATE TABLE active_multiplex_new (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			target_cli_id INTEGER NOT NULL REFERENCES target_clis(id) ON DELETE CASCADE,
@@ -222,26 +228,24 @@ func MigrationMultiProvider(db *sql.DB) error {
 			UNIQUE(target_cli_id, provider_id)
 		)
 	`); err != nil {
-		return fmt.Errorf("create new active_multiplex table: %w", err)
+		return err
 	}
 
-	// Copy existing data
-	if _, err := db.Exec(`
+	if _, err := tx.Exec(`
 		INSERT INTO active_multiplex_new (target_cli_id, provider_id, model_mappings, activated_at)
 		SELECT target_cli_id, provider_id, model_mappings, activated_at FROM active_multiplex
 	`); err != nil {
-		return fmt.Errorf("migrate active_multiplex data: %w", err)
+		return err
 	}
 
-	// Swap tables
-	if _, err := db.Exec(`DROP TABLE active_multiplex`); err != nil {
-		return fmt.Errorf("drop old active_multiplex: %w", err)
+	if _, err := tx.Exec(`DROP TABLE active_multiplex`); err != nil {
+		return err
 	}
-	if _, err := db.Exec(`ALTER TABLE active_multiplex_new RENAME TO active_multiplex`); err != nil {
-		return fmt.Errorf("rename new active_multiplex: %w", err)
+	if _, err := tx.Exec(`ALTER TABLE active_multiplex_new RENAME TO active_multiplex`); err != nil {
+		return err
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 // CreateIndexes creates indexes if they do not exist.

@@ -115,9 +115,12 @@ func (uc *SwitchUseCases) Apply(targetCLIID, providerID int64) (*domain.BackupRe
 			cfg[k] = v
 		}
 
-		// Use provider name as the provider entry key so each binding gets its own
-		// entry. Prevents "custom" key collisions from seed data.
-		cfg["provider_id"] = strings.ToLower(strings.ReplaceAll(provider.Name, " ", "-"))
+		// For pi/OpenCode mutators, use provider name as the entry key so each
+		// binding gets its own entry. For env-mapping CLIs (Claude, Codex), keep
+		// the original provider_id since they use it for env key names.
+		if cli.Mutator == "pi-dual-json" || cli.Mutator == "opencode-provider-json" {
+			cfg["provider_id"] = strings.ToLower(strings.ReplaceAll(provider.Name, " ", "-"))
+		}
 
 		// First binding clears the provider map so deleted bindings don't leave
 		// stale entries in the config file.
@@ -180,23 +183,6 @@ func (uc *SwitchUseCases) DryRun(targetCLIID, providerID int64) (*DryRunResult, 
 		return nil, fmt.Errorf("get target cli: %w", err)
 	}
 
-	var targetPID int64
-	if providerID != 0 {
-		targetPID = providerID
-	} else {
-		// Get first bound provider for display
-		all, err := uc.multiplexRepo.ListForCLI(targetCLIID)
-		if err != nil || len(all) == 0 {
-			return nil, fmt.Errorf("no active multiplex for target CLI %d", targetCLIID)
-		}
-		targetPID = all[0].ProviderID
-	}
-
-	provider, err := uc.providerRepo.Get(targetPID)
-	if err != nil {
-		return nil, fmt.Errorf("get provider: %w", err)
-	}
-
 	allMux, err := uc.multiplexRepo.ListForCLI(targetCLIID)
 	if err != nil || len(allMux) == 0 {
 		return nil, fmt.Errorf("no active multiplex for target CLI %d", targetCLIID)
@@ -219,7 +205,6 @@ func (uc *SwitchUseCases) DryRun(targetCLIID, providerID int64) (*DryRunResult, 
 		return nil, fmt.Errorf("resolve config path: %w", err)
 	}
 
-	_ = provider
 	return &DryRunResult{
 		CLIName:    cli.Name,
 		ConfigPath: resolvedPath,
@@ -248,10 +233,7 @@ func (uc *SwitchUseCases) GetActiveForCLI(targetCLIID int64) (*domain.ActiveMult
 	if err != nil {
 		return nil, err
 	}
-	if am.TargetCLIID == 0 {
-		return nil, nil
-	}
-	return &am, nil
+	return am, nil
 }
 
 // BindProfile validates and stores a profile binding.
@@ -355,7 +337,7 @@ func (uc *SwitchUseCases) RemoveBinding(targetCLIID, providerID int64) error {
 			return uc.multiplexRepo.ClearBinding(targetCLIID, providerID)
 		}
 	}
-	return fmt.Errorf("binding for provider %d not found", targetCLIID)
+	return fmt.Errorf("binding for provider %d not found", providerID)
 }
 
 // ClearCLIConfig removes all custom provider entries from the config file
@@ -395,8 +377,7 @@ func (uc *SwitchUseCases) GetBoundModels(targetCLIID int64) (map[string]string, 
 	if err != nil {
 		return nil, err
 	}
-	if am.TargetCLIID == 0 {
-		// No active multiplex — return empty map, no error
+	if am == nil {
 		return make(map[string]string), nil
 	}
 

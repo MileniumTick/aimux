@@ -13,8 +13,8 @@ type MultiplexRepository struct {
 }
 
 // GetActive returns the active multiplex for a given target CLI.
-// Returns empty struct if no row exists (no error).
-func (r *MultiplexRepository) GetActive(targetCLIID int64) (domain.ActiveMultiplex, error) {
+// Returns nil if no row exists (no error).
+func (r *MultiplexRepository) GetActive(targetCLIID int64) (*domain.ActiveMultiplex, error) {
 	var am domain.ActiveMultiplex
 	err := r.DB.QueryRow(
 		`SELECT target_cli_id, provider_id, model_mappings, activated_at,
@@ -24,11 +24,11 @@ func (r *MultiplexRepository) GetActive(targetCLIID int64) (domain.ActiveMultipl
 	).Scan(&am.TargetCLIID, &am.ProviderID, &am.ModelMappings, &am.ActivatedAt, &am.ProviderName, &am.CLIName)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return domain.ActiveMultiplex{}, nil
+			return nil, nil
 		}
-		return am, fmt.Errorf("get active multiplex: %w", err)
+		return nil, fmt.Errorf("get active multiplex: %w", err)
 	}
-	return am, nil
+	return &am, nil
 }
 
 // SetActive inserts or updates an active multiplex row for a (CLI, provider) pair.

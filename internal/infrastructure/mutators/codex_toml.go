@@ -40,9 +40,10 @@ func (m *CodexConfigTOML) Mutate(
 	var backupResult *domain.BackupResult
 	if fi, err := os.Stat(configPath); err == nil && fi.Mode().IsRegular() {
 		bp, err := config.CreateBackup(configPath)
-		if err == nil {
-			backupResult = &domain.BackupResult{BackupPath: bp}
+		if err != nil {
+			return nil, fmt.Errorf("backup failed before mutation: %w", err)
 		}
+		backupResult = &domain.BackupResult{BackupPath: bp}
 	}
 
 	// Read existing TOML (or start empty)
@@ -135,7 +136,7 @@ func (m *CodexConfigTOML) Mutate(
 	envDir := filepath.Dir(configPath)
 	envPath := filepath.Join(envDir, ".env")
 	envContent := envKeyName + "=" + provider.APIKey + "\n"
-	if err := os.WriteFile(envPath, []byte(envContent), 0600); err != nil {
+	if err := config.AtomicWrite([]byte(envContent), envPath); err != nil {
 		return nil, fmt.Errorf("write env file: %w", err)
 	}
 

@@ -108,6 +108,7 @@ func NewSelectTargetCLIForm(clis []domain.TargetCLI, result *int64) *huh.Form {
 		huh.NewGroup(
 			huh.NewSelect[int64]().
 				Title("Select Target CLI").
+				Filtering(true).
 				Options(opts...).
 				Value(result),
 		),
@@ -138,6 +139,7 @@ func newSelectProviderForm(title string, providers []domain.Provider, result *in
 		huh.NewGroup(
 			huh.NewSelect[int64]().
 				Title(title).
+				Filtering(true).
 				Options(opts...).
 				Value(result),
 		),
@@ -163,14 +165,6 @@ func NewRegisterModelsForm(models []domain.ProviderModel, preSelected map[string
 		opts = append(opts, huh.NewOption(m.ModelName, m.ModelName))
 	}
 
-	// Default selections: models that are already mapped
-	defaults := make([]string, 0, len(preSelected))
-	for _, m := range models {
-		if preSelected[m.ModelName] {
-			defaults = append(defaults, m.ModelName)
-		}
-	}
-
 	return huh.NewForm(
 		huh.NewGroup(
 			huh.NewMultiSelect[string]().
@@ -179,7 +173,62 @@ func NewRegisterModelsForm(models []domain.ProviderModel, preSelected map[string
 				Options(opts...).
 				Value(&result.RegisteredModels),
 		),
-	).WithHeight(10)
+	)
+}
+
+// NewSelectModelsForm creates a multi-select to pick models for a CLI.
+// All models are pre-selected by default. Uses RegisterModelsResult as bridge.
+func NewSelectModelsForm(models []domain.ProviderModel, result *RegisterModelsResult) *huh.Form {
+	preselected := make(map[string]bool, len(models))
+	for _, m := range models {
+		preselected[m.ModelName] = true
+	}
+	return NewRegisterModelsForm(models, preselected, result)
+}
+
+// EditModelsResult holds the result from the edit-models form.
+type EditModelsResult struct {
+	SelectedModels []string
+	CustomModels   string // comma-separated custom model IDs
+}
+
+// NewEditModelsForm creates a form to edit which models are included for a
+// binding. Shows multi-select of provider models (current ones pre-selected)
+// plus a text input for custom model IDs (in case the fetch missed some).
+func NewEditModelsForm(models []domain.ProviderModel, currentModels []string, result *EditModelsResult) *huh.Form {
+	preselected := make(map[string]bool, len(currentModels))
+	for _, m := range currentModels {
+		preselected[m] = true
+	}
+
+	opts := make([]huh.Option[string], 0, len(models))
+	for _, m := range models {
+		opts = append(opts, huh.NewOption(m.ModelName, m.ModelName))
+	}
+
+	defaults := make([]string, 0, len(currentModels))
+	for _, m := range models {
+		if preselected[m.ModelName] {
+			defaults = append(defaults, m.ModelName)
+		}
+	}
+
+	result.SelectedModels = defaults
+
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewMultiSelect[string]().
+				Title("Select Models").
+				Description("Pick models to include. Space to toggle.").
+				Options(opts...).
+				Value(&result.SelectedModels),
+			huh.NewInput().
+				Title("Custom Models").
+				Description("Extra model IDs not in the list (comma-separated)").
+				Placeholder("e.g. my-custom-model,other-model").
+				Value(&result.CustomModels),
+		),
+	)
 }
 
 // EditCLIPathResult holds the values from the Edit CLI Path form.
@@ -199,6 +248,7 @@ func NewSelectCLIForm(clis []domain.TargetCLI, result *int64) *huh.Form {
 		huh.NewGroup(
 			huh.NewSelect[int64]().
 				Title("Select CLI to Edit").
+				Filtering(true).
 				Options(opts...).
 				Value(result),
 		),
@@ -376,6 +426,7 @@ func NewRestoreBackupForm(backups []application.BackupOption, result *string) *h
 			huh.NewSelect[string]().
 				Title("Select Backup to Restore").
 				Description("Newest first. Restore overwrites current config.").
+				Filtering(true).
 				Options(opts...).
 				Value(result),
 		),
