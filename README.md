@@ -1,6 +1,6 @@
 # aimux — AI Provider Multiplexer
 
-> Route multiple AI dev CLIs (Claude Code, OpenCode, Codex, Copilot, pi) through your own providers with a single TUI.
+> Route multiple AI dev CLIs (Claude Code, OpenCode, Codex, Copilot, pi) through your own providers with a single TUI. Multi-provider, model selection, self-update, and centralized backups.
 
 ---
 
@@ -15,12 +15,17 @@
   - [Dashboard](#dashboard)
   - [Providers (Añadir/Editar/Eliminar)](#providers)
   - [Switch Flow](#switch-flow)
+  - [Multi-Provider](#multi-provider)
   - [CLI Management](#cli-management)
+  - [Restore Backup](#restore-backup-from-tui)
 - [Example: Claude Code + Bifrost (Anthropic)](#example-claude-code--bifrost-anthropic)
+- [Example: Copilot + Local LLM](#example-copilot--local-llm)
 - [Backup System](#backup-system)
 - [CLI Reference](#cli-reference)
 - [Development](#development)
 - [FAQ](#faq)
+- [User Manual (Español)](docs/manual-de-usuario.md)
+- [Full Documentation](#full-documentation)
 
 ---
 
@@ -38,13 +43,13 @@ Instead of editing each CLI's config file manually (`~/.claude/settings.json`, `
 
 ### Supported CLIs
 
-| CLI | Config File | Mutator |
-|-----|------------|---------|
-| **Claude Code** | `~/.config/claude/settings.json` | `claude-settings-json` |
-| **OpenCode** | `~/.config/opencode/config.json` | `opencode-provider-json` |
-| **Codex** | `~/.codex/config.toml` | `codex-config-toml` |
-| **GitHub Copilot** | `~/.config/copilot/.env` | `copilot-env-file` |
-| **pi.ai** | `~/.pi/agent/models.json` | `pi-dual-json` |
+| CLI | Config File | Mutator | Multi-Provider |
+|-----|------------|---------|---------------|
+| **Claude Code** | `~/.config/claude/settings.json` | `claude-settings-json` | ❌ |
+| **OpenCode** | `~/.config/opencode/config.json` | `opencode-provider-json` | ✅ |
+| **Codex** | `~/.codex/config.toml` | `codex-config-toml` | ❌ |
+| **GitHub Copilot** | Shell profile (`~/.zshrc`, `~/.bashrc`, `~/.config/fish/config.fish`) | `copilot-shell-profile` | ✅ |
+| **pi** | `~/.pi/agent/models.json` | `pi-dual-json` | ✅ |
 
 ### Supported Provider Types
 
@@ -53,6 +58,10 @@ Instead of editing each CLI's config file manually (`~/.claude/settings.json`, `
 | **OpenAI / OpenAI-compatible** | Bearer token | `GET /v1/models` |
 | **Anthropic** | `x-api-key` header | `GET /v1/models` |
 | **Google AI (Gemini)** | API key query param | `GET /v1beta/models` |
+
+### Discovery URL (optional)
+
+Each provider can have a **Discovery URL** separate from its Base URL. Useful when `/v1/models` lives at a different address than the chat endpoint. Leave empty to use Base URL for both.
 
 ---
 
@@ -150,7 +159,7 @@ go install github.com/MileniumTick/aimux@latest
 
 ```bash
 aimux version
-# → aimux 0.1.0-dev
+# → aimux 0.2.0
 ```
 
 ---
@@ -186,10 +195,10 @@ You'll see the **dashboard** with your pre-configured CLIs and any active provid
 
 1. Select **Manage Providers** and press Enter
 2. Press **a** to add a provider
-3. Fill in: Name, Base URL, API Key, Auth Token, API Type
+3. Fill in: Name, Base URL, Discovery URL (optional), API Key, Auth Token, API Type
 4. Back in the provider list, select your provider and press **Enter**
-5. Follow the **Switch flow**: choose CLI → choose Provider → map models
-6. Review the **dry-run** summary — press Enter to apply
+5. Follow the **Switch flow** (5 steps): CLI → Provider → Map/Select Models → Advanced Review → Confirm
+6. Review the dry-run diff and press Enter to apply
 7. Done! Your CLI is now configured to use your provider
 
 ---
@@ -200,7 +209,7 @@ You'll see the **dashboard** with your pre-configured CLIs and any active provid
 # See active multiplexes
 aimux list
 
-# Apply (re-apply) the active provider for a CLI
+# Apply (re-apply) active provider bindings for a CLI
 aimux apply claude-code
 
 # List centralized backups
@@ -213,10 +222,10 @@ aimux backups claude-code
 aimux restore claude-code
 # → Restored latest backup: /Users/you/.config/aimux/backups/settings.json-abc123def4/settings.json.2026-06-18T03-21-00Z
 
-# Check version and updates
+# Check version and auto-update
 aimux version
 
-# Self-update
+# Self-update binary
 aimux update
 ```
 
@@ -230,11 +239,12 @@ The dashboard is the main view when you launch `aimux` without arguments. It sho
 
 | Section | Description |
 |---------|-------------|
-| **Status table** | All 5 target CLIs with their current provider, mapped models, and ACTIVE/INACTIVE status |
-| **Menu** | Choose between Switch, Manage Providers, Manage CLIs, and Exit |
+| **Summary** | Numeric overview: active/errored providers, active/inactive CLIs |
+| **Welcome** | Shown on first run with no providers — guides you to add one |
+| **Menu** | Choose between Switch, Manage Providers, Manage CLIs, Restore Backup, and Exit |
 | **Notifications** | Green/red bar at the bottom for success/error messages |
 
-**Keys:** `↑/↓` or `k/j` to navigate menu · `Enter` to select · `q` to quit.
+**Keys:** `↑/↓` or `k/j` to navigate menu · `Enter` to select · `q` to quit · `?` for help overlay · `Z` to undo last apply.
 
 ### Providers
 
@@ -261,7 +271,8 @@ The **Add Provider** form asks for:
 2. **Base URL** — full URL including scheme (e.g. `https://api.openai.com/v1`, `https://ai.intranet.istmocenter.com`)
 3. **API Key** — shown as password input
 4. **Auth Token** — optional if same as API Key
-5. **API Type** — `OpenAI`, `Anthropic`, or `Google AI (Gemini)`
+5. **Discovery URL** — optional, for model discovery. Leave empty to reuse Base URL.
+6. **API Type** — `OpenAI`, `Anthropic`, or `Google AI (Gemini)`
 
 After submitting, aimux immediately fetches available models from `GET /v1/models` and populates the model list.
 
@@ -271,60 +282,92 @@ The Edit form is pre-filled with the current values. Name is read-only. You can 
 
 ### Switch Flow
 
-The **Switch Flow** binds a provider to a CLI with specific model mappings.
+The **Switch Flow** binds a provider to a CLI. It has **5 steps** shown in a stepper:
 
 ```
-Step 1/4: Select Target CLI
-  ┌──────────────────────────────────────────────┐
-  │ ● claude-code                                │
-  │ ○ opencode                                   │
-  │ ○ codex                                      │
-  │ ○ github-copilot                             │
-  │ ○ pi-ai                                      │
-  └──────────────────────────────────────────────┘
+Step 1/5: Select Target CLI
+  ● ◉ ○ ○ ○
 
-Step 2/4: Select Provider
-  ┌──────────────────────────────────────────────┐
-  │ ● Bifrost (Anthropic)                        │
-  │ ○ My OpenAI                                  │
-  └──────────────────────────────────────────────┘
+Step 2/5: Select Provider
 
-Step 3/4: Map Models (varies per CLI)
+Step 3/5: Map / Select Models (varies per CLI)
 
-  Example for claude-code:
-  ┌──────────────────────────────────────────────┐
-  │ ANTHROPIC_DEFAULT_HAIKU_MODEL                │
-  │ ┌────────────────────────────────────────┐    │
-  │ │ deepseek-v4-flash                      │    │
-  │ └────────────────────────────────────────┘    │
-  │ ANTHROPIC_DEFAULT_SONNET_MODEL                │
-  │ ┌────────────────────────────────────────┐    │
-  │ │ deepseek-v4-pro                        │    │
-  │ └────────────────────────────────────────┘    │
-  │ ANTHROPIC_DEFAULT_OPUS_MODEL                  │
-  │ ┌────────────────────────────────────────┐    │
-  │ │ (Not Selected)                         │    │
-  │ └────────────────────────────────────────┘    │
-  └──────────────────────────────────────────────┘
+Step 4/5: Advanced Model Configuration Review
 
-Step 4/4: Confirmation (Dry-run)
-
-  Dry-run — the following will be applied:
-
-  Target CLI:  claude-code
-  Config:      /Users/you/.config/claude/settings.json
-  Env vars:
-      ANTHROPIC_DEFAULT_HAIKU_MODEL = deepseek-v4-flash
-      ANTHROPIC_DEFAULT_SONNET_MODEL = deepseek-v4-pro
-
-  Enter = Apply · Esc = Abort
+Step 5/5: Confirm & Apply (Dry-run with diff view)
 ```
 
-After applying, a notification confirms success and shows the backup path.
+#### Step 1: Select CLI
+
+Type to filter. The CLI type determines the model UI:
+
+| CLI | Model UI | Multi-provider?
+|-----|----------|---------------
+| **claude-code** | Per-env-var mapping | ❌
+| **codex** | Per-env-var mapping | ❌
+| **opencode** | Multi-select (checkboxes) | ✅
+| **pi-ai** | Multi-select (checkboxes) | ✅
+| **github-copilot** | Single-model select | ✅
+
+#### Step 2: Select Provider
+
+Filter by typing. Providers with errors show `[ERROR]`.
+
+#### Step 3: Map / Select Models
+
+**For Claude Code / Codex (env-var mapping):**
+Each env var gets its own selector. Use "(Apply to all)" on fields 2+.
+
+```
+ANTHROPIC_DEFAULT_HAIKU_MODEL  → deepseek-v4-flash
+ANTHROPIC_DEFAULT_SONNET_MODEL → deepseek-v4-pro
+ANTHROPIC_DEFAULT_OPUS_MODEL   → (Not Selected)
+```
+
+**For pi / OpenCode (multi-select):**
+Toggle models with Space. All pre-selected by default.
+
+**For Copilot (single-select):**
+Pick one model for `COPILOT_MODEL`.
+
+#### Step 4: Advanced Config Review
+
+Shows metadata per model (context window, max tokens, reasoning, cost, context suffix).
+
+#### Step 5: Dry-run & Apply
+
+Side-by-side diff shows current config vs new env vars. Press **Enter** to apply.
+
+After apply, press **Z** on the dashboard for instant undo (restores latest backup).
+
+### Multi-Provider
+
+CLIs that support multi-provider (OpenCode, pi, Copilot) show a **Manage Bindings** view when the chosen CLI already has active bindings. From here:
+
+- **`a`** — Add another provider
+- **`d`** — Remove the selected binding
+- **`e`** — Edit which models are mapped
+- **Enter** — Apply all bindings at once
+
+This lets you run, e.g., OpenCode with two providers: one for fast models, one for reasoning.
 
 ### CLI Management
 
-Select **Manage CLIs** from the dashboard menu to edit the config path of any target CLI. This is useful if your CLI stores its config in a non-default location.
+Select **Manage CLIs** to edit config paths. For Copilot, a note is shown instead — the shell profile is auto-detected from `$SHELL`:
+
+| Shell | Profile |
+|-------|---------|
+| `zsh` | `~/.zshrc` |
+| `bash` | `~/.bashrc` |
+| `fish` | `~/.config/fish/config.fish` |
+
+### Restore Backup from TUI
+
+Select **Restore Backup** from the dashboard menu:
+
+1. Pick the CLI
+2. Choose a backup from the timestamp-ordered list (newest first)
+3. Confirm — backup overwrites the current config file
 
 ---
 
@@ -362,24 +405,20 @@ Select **claude-code** from the CLI list.
 
 ### Step 5: Map models
 
-Map the env vars to available models:
+Map the env vars to available models. Use "(Apply to all)" on fields 2+ to reuse the first model selection.
 
 ```
 ANTHROPIC_DEFAULT_HAIKU_MODEL  → deepseek-v4-flash
 ANTHROPIC_DEFAULT_SONNET_MODEL → deepseek-v4-pro
 ```
 
-### Step 6: Review and apply
+### Step 6: Review advanced config (Step 4/5)
 
-The dry-run shows:
+Shows metadata per model: context window, max tokens, reasoning support, costs.
 
-```
-Target CLI:  claude-code
-Config:      /Users/you/.config/claude/settings.json
-Env vars:
-    ANTHROPIC_DEFAULT_HAIKU_MODEL = deepseek-v4-flash
-    ANTHROPIC_DEFAULT_SONNET_MODEL = deepseek-v4-pro
-```
+### Step 7: Confirm and apply
+
+The dry-run shows a diff view — current config on the left, new env vars on the right.
 
 Press **Enter** to apply. This will:
 
@@ -388,7 +427,9 @@ Press **Enter** to apply. This will:
 3. ✅ Prune old backups (keeps 5)
 4. ✅ Show a green success notification
 
-### Step 7: Verify
+Press **Z** on the dashboard to undo (restore latest backup).
+
+### Step 8: Verify
 
 ```bash
 # Claude Code now uses your provider
@@ -416,6 +457,14 @@ After applying, `~/.config/claude/settings.json` contains:
 
 > **Note:** Aimux uses `ANTHROPIC_AUTH_TOKEN` (not `ANTHROPIC_API_KEY`) because Claude Code's login flow interferes with `ANTHROPIC_API_KEY`. The token is set in the `env` block to avoid polluting global environment variables.
 
+### Quick undo
+
+After applying, the dashboard shows `Z to undo`. Press **Z** to restore the latest backup instantly.
+
+### Quick undo
+
+After applying, the dashboard shows a `Z to undo` hint. Press **Z** to instantly restore the latest backup.
+
 ### Same example via CLI only
 
 ```bash
@@ -425,6 +474,49 @@ aimux apply claude-code     # re-apply the binding
 aimux backups claude-code   # see backup history
 aimux restore claude-code   # restore previous config
 ```
+
+---
+
+## Example: Copilot + Local LLM
+
+This example configures **GitHub Copilot** to use a local OpenAI-compatible server (Ollama, llama.cpp, etc.).
+
+### Step 1: Add the provider
+
+```
+Name:          Local LLM
+Base URL:      http://localhost:8080/v1
+API Key:       (leave empty — local server needs no auth)
+Auth Token:    (leave empty)
+API Type:      OpenAI
+```
+
+### Step 2: Start Switch flow
+
+From the provider list, select "Local LLM" and press Enter.
+
+### Step 3: Select CLI
+
+Choose **github-copilot**.
+
+### Step 4: Select model
+
+Copilot uses a single model. Pick one from the list.
+
+### Step 5: Apply
+
+aimux writes to your shell profile (`~/.zshrc`, `~/.bashrc`, or `~/.config/fish/config.fish`):
+
+```bash
+# >>> aimux copilot provider
+# Managed by aimux — DO NOT EDIT BETWEEN MARKERS
+export COPILOT_PROVIDER_BASE_URL="http://localhost:8080/v1"
+export COPILOT_PROVIDER_TYPE="openai"
+export COPILOT_MODEL="llama-3.1-8b"
+# <<< aimux copilot provider
+```
+
+> **Note:** Copilot reads process env vars, not `.env` files. aimux writes to your shell profile instead. Restart the terminal or run `source ~/.zshrc` for changes to take effect.
 
 ---
 
@@ -542,8 +634,8 @@ Shows the binary version and checks for updates using the GitHub releases API.
 
 ```bash
 $ aimux version
-aimux 0.1.0-dev
-Update available: v0.1.0-dev → v1.0.0
+aimux 0.2.0
+Update available: v0.2.0 → v0.3.0
 ```
 
 ### `aimux update`
@@ -583,8 +675,8 @@ go test ./... -v
 │   │   ├── path.go                  Path resolution (tilde expansion, config dir)
 │   │   ├── provider_svc.go          Provider use cases (CRUD, fetch, retry, test)
 │   │   ├── provider_svc_test.go
-│   │   ├── switch_svc.go            Switch use cases (apply, bind, backups, dry-run)
-│   │   ├── switch_svc_test.go
+│   │   ├── multiplex_svc.go         Switch use cases (apply, bind, dry-run, multi-provider)
+│   │   ├── multiplex_svc_test.go
 │   │   └── helpers_test.go          Test setup (in-memory SQLite, seed data)
 │   ├── domain/
 │   │   ├── provider.go              Provider, ProviderModel, ModelMetadata types
@@ -600,7 +692,7 @@ go test ./... -v
 │   │   │   ├── claude_json_test.go
 │   │   │   ├── opencode_json.go     OpenCode config.json
 │   │   │   ├── codex_toml.go        Codex config.toml
-│   │   │   ├── copilot_env.go       Copilot .env file
+│   │   │   ├── copilot_shell.go      Copilot shell profile
 │   │   │   ├── pi_dual.go           pi agent models.json
 │   │   │   └── *test.go
 │   │   ├── sqlite/                  SQLite repositories + migrations + seed
@@ -640,6 +732,9 @@ go test ./... -v
 - **ANTHROPIC_AUTH_TOKEN over ANTHROPIC_API_KEY**: Claude Code's OAuth login interferes with `API_KEY`; `AUTH_TOKEN` bypasses it
 - **Centralized backups**: Backups live in `~/.config/aimux/backups/`, not next to the CLI's config file
 - **`[1m]` suffix auto-detection**: Models with 1M+ context window get the suffix appended automatically for Claude Code
+- **Multi-provider**: OpenCode, pi, and Copilot can have multiple simultaneous provider bindings
+- **Copilot via shell profile**: Copilot reads process env vars, so aimux writes to `~/.zshrc`/`~/.bashrc`/`~/.config/fish/config.fish` instead of `.env` files
+- **Discovery URL**: Separate URL for model discovery, useful when `/v1/models` differs from the chat endpoint
 
 ---
 
@@ -672,9 +767,36 @@ aimux backups claude-code     # see available backups
 aimux restore claude-code     # restore the latest one
 ```
 
+Or press **Z** on the dashboard for instant undo (restores the latest backup of the last applied CLI).
+
+### Can I have multiple providers for the same CLI?
+
+Yes, for **OpenCode**, **pi**, and **GitHub Copilot**. These CLIs support multi-provider. After binding the first provider, aimux shows a **Manage Bindings** view where you can add, edit, and remove provider bindings.
+
+### How does aimux configure Copilot?
+
+Copilot reads process environment variables, not `.env` files. Aimux writes `COPILOT_PROVIDER_*` vars to your shell profile (`~/.zshrc`, `~/.bashrc`, `~/.config/fish/config.fish`), wrapped in markers for idempotent updates. After applying, restart the terminal or `source` your profile.
+
+### What is the Discovery URL for?
+
+Some providers expose model discovery at a different URL than chat completions. The **Discovery URL** is optional — leave it empty to use the Base URL for both.
+
 ### What storage engine does aimux use?
 
 SQLite via `modernc.org/sqlite` — a pure Go SQLite implementation with no CGO dependency. The database file is at `~/.config/aimux/matrix.db`.
+
+---
+
+## Full Documentation
+
+| Doc | Description |
+|-----|-------------|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Layers, interfaces, data flow, key design decisions, package contracts |
+| [DESIGN.md](DESIGN.md) | TUI visual design decisions: color palette, layout system, theme architecture |
+| [docs/DATABASE.md](docs/DATABASE.md) | Schema reference, migration history, seed data, query patterns |
+| [docs/SECURITY.md](docs/SECURITY.md) | Security model: data at rest, mutation integrity, threat model |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Build, test, release, contribution guide |
+| [docs/manual-de-usuario.md](docs/manual-de-usuario.md) | Manual de usuario en español |
 
 ---
 
