@@ -8,20 +8,15 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-var (
-	headerStyle   = aimuxT.TableHeader
-	dividerStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("237"))
-	rowEvenStyle  = aimuxT.TableRow
-	rowOddStyle   = aimuxT.TableRowAlt
-	inactiveStyle = aimuxT.Inactive
-	activeStyle   = aimuxT.TableActive
-	errorStyle    = lipgloss.NewStyle().Foreground(aimuxT.Red)
-)
-
-// RenderProviderList renders the provider management list with status, model count, and usage info.
+// RenderProviderList renders the provider management list with card-based styling.
+// Each provider is displayed as a bordered card with status badge, URL, and model count.
 func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth int, allModels []domain.ProviderModel, activeMultiplexes []domain.ActiveMultiplex) string {
 	if len(providers) == 0 {
-		return helpStyle.Render("No providers configured. Press 'a' to add one.")
+		empty := lipgloss.NewStyle().
+			Foreground(aimuxT.TextMuted).
+			Padding(1, 2).
+			Render("No providers configured. Press 'a' to add one.")
+		return aimuxT.Card.Copy().Width(termWidth - 8).Render(empty)
 	}
 
 	// Build model count per provider
@@ -36,75 +31,102 @@ func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth
 		inUse[am.ProviderID] = true
 	}
 
-	var b strings.Builder
-	b.WriteString("\n")
+	// Card width: terminal width minus outer padding
+	cardW := termWidth - 8
+	if cardW < 40 {
+		cardW = 40
+	}
+	if cardW > 80 {
+		cardW = 80
+	}
 
-	for i, p := range providers {
+	// Max text width within card: cardW minus border(2) minus padding(2)
+	maxTextW := cardW - 4
+	if maxTextW < 10 {
+		maxTextW = 10
+	}
+
+	var cards []string
+
+	for _, p := range providers {
 		selected := p.ID == selectedID
 
-		titleStyle := aimuxT.ItemTitle
-		detailStyle := aimuxT.ItemDesc
-		if selected {
-			titleStyle = aimuxT.SelTitle
-			detailStyle = aimuxT.SelDesc
-		}
-
-		// Status label
-		statusLabel := "OK"
-		statusFg := aimuxT.Green
+		// Status badge
+		var statusBadge string
 		if p.Status == "error" {
-			statusLabel = "ERROR"
-			statusFg = aimuxT.Red
+			statusBadge = lipgloss.NewStyle().
+				Foreground(aimuxT.Red).
+				Bold(true).
+				Render(" ERROR ")
+		} else {
+			statusBadge = lipgloss.NewStyle().
+				Foreground(aimuxT.Green).
+				Bold(true).
+				Render(" OK ")
 		}
-		statusLabel = lipgloss.NewStyle().Foreground(statusFg).Render(statusLabel)
 
 		// In-use badge
-		useLabel := ""
+		var useBadge string
 		if inUse[p.ID] {
-			useLabel = lipgloss.NewStyle().
-				Foreground(aimuxT.AccentAlt).
-				Render(" in use")
+			useBadge = lipgloss.NewStyle().
+				Foreground(aimuxT.Accent).
+				Render("● in use")
 		}
 
-		b.WriteString(titleStyle.Render(fmt.Sprintf(" %s  %s%s", p.Name, statusLabel, useLabel)))
-		b.WriteString("\n")
-
-		// URL display
-		url := p.BaseURL
-		maxURL := termWidth - 20
-		if maxURL < 30 {
-			maxURL = 30
-		} else if maxURL > 70 {
-			maxURL = 70
-		}
-		if len(url) > maxURL {
-			url = url[:maxURL-3] + "..."
+		// Selection indicator
+		var selIndicator string
+		if selected {
+			selIndicator = lipgloss.NewStyle().
+				Foreground(aimuxT.Accent).
+				Bold(true).
+				Render("▸ ")
+		} else {
+			selIndicator = "  "
 		}
 
-		// Model count and type
-		modelInfo := fmt.Sprintf("%d models", modelCounts[p.ID])
-		if len(p.ApiType) > 0 {
-			modelInfo += fmt.Sprintf(" · %s", p.ApiType)
+		// Name line: indicator + truncated name + status + in-use
+		nameStyle := aimuxT.ItemTitle
+		// Leave ~20 cells for badges (OK + ● in use) and spacing
+		nameMax := maxTextW - 20
+		if nameMax < 8 {
+			nameMax = 8
+		}
+		displayName := truncateText(p.Name, nameMax)
+		nameLine := selIndicator + nameStyle.Render(displayName) + "  " + statusBadge
+		if useBadge != "" {
+			nameLine += "  " + useBadge
 		}
 
-		b.WriteString(detailStyle.Render(fmt.Sprintf("  %s", url)))
-		b.WriteString("\n")
-		b.WriteString(detailStyle.Render(fmt.Sprintf("  %s", modelInfo)))
-		b.WriteString("\n")
+		// URL line — ANSI-safe truncation
+		urlDisplay := truncateText(p.BaseURL, maxTextW-4)
+		urlStyle := aimuxT.ItemDesc
+		urlLine := truncateTextStyle("  "+urlDisplay, urlStyle, maxTextW)
 
-		if i < len(providers)-1 {
-			b.WriteString("\n")
+		// Model count line
+		modelInfo := fmt.Sprintf("  %d models", modelCounts[p.ID])
+		modelLine := urlStyle.Render(modelInfo)
+
+		// Build card content
+		cardContent := lipgloss.JoinVertical(lipgloss.Left,
+			nameLine,
+			urlLine,
+			modelLine,
+		)
+
+		// Wrap in bordered card; selected gets accent border + ▸ indicator
+		cardStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(aimuxT.Border).
+			Padding(0, 1).
+			Width(cardW)
+
+		if selected {
+			cardStyle = cardStyle.BorderForeground(aimuxT.Accent)
 		}
+
+		cards = append(cards, cardStyle.Render(cardContent))
 	}
 
-	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓ navigate · Enter = Switch · a add · d delete · e edit · r retry · t test · Esc back"))
-	return b.String()
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-1] + "…"
+	// Join cards vertically with spacing
+	return strings.Join(cards, "\n")
 }

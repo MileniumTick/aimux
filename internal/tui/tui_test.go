@@ -62,11 +62,14 @@ func TestRenderProviderList_WithProviders(t *testing.T) {
 }
 
 func TestNewModel(t *testing.T) {
-	m := NewModel(nil, nil)
+	m := NewModel(nil, nil, "test")
 	if m == nil {
 		t.Fatal("NewModel returned nil")
 	}
 	if m.currentView != dashboardView {
 		t.Errorf("expected dashboardView, got %d", m.currentView)
+	}
+	if m.version != "test" {
+		t.Errorf("expected version test, got %s", m.version)
 	}
 }

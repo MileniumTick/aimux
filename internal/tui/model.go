@@ -5,14 +5,18 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/MileniumTick/aimux/internal/application"
 	"github.com/MileniumTick/aimux/internal/domain"
 	"github.com/MileniumTick/aimux/internal/infrastructure/config"
+	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
@@ -34,6 +38,12 @@ var switchStepLabels = map[int]string{
 	switchStepReviewConfig: "Review Configuration",
 	switchStepConfirm:      "Confirm & Apply",
 }
+
+// Minimum terminal dimensions for a usable layout
+const (
+	minTermWidth  = 50
+	minTermHeight = 15
+)
 
 type viewType int
 
@@ -58,6 +68,31 @@ const (
 	switchAdvancedConfigView
 )
 
+// uiLayout holds the precomputed screen regions (A3).
+// Computed once per tea.WindowSizeMsg so every component knows its rect.
+type uiLayout struct {
+	headerH int // header bar height (1)
+	footerH int // footer bar height (1)
+	bodyW   int // body content width (terminal width minus horizontal padding)
+	bodyH   int // body content height (terminal height minus header/footer)
+}
+
+// computeLayout derives the layout from the current terminal dimensions.
+// Returns a zero-value layout if dimensions are not yet known.
+func (m *model) computeLayout() uiLayout {
+	if m.width == 0 || m.height == 0 {
+		return uiLayout{}
+	}
+	headerH := 1
+	footerH := 1
+	return uiLayout{
+		headerH: headerH,
+		footerH: footerH,
+		bodyW:   m.width - 4, // Padding(0, 2): 2 each side
+		bodyH:   m.height - headerH - footerH,
+	}
+}
+
 type (
 	DashboardRefreshMsg struct{}
 
@@ -72,8 +107,10 @@ type (
 	}
 
 	notificationMsg struct {
-		message string
-		isError bool
+		message  string
+		isError  bool          // kept for backwards compat
+		severity string        // "info", "warn", "error" — overrides isError when set
+		ttl      time.Duration // 0 = use default per severity
 	}
 
 	clearNotificationMsg struct{}
@@ -123,9 +160,25 @@ var menuKeys = keyMap{
 	Undo:   key.NewBinding(key.WithKeys("Z"), key.WithHelp("Z", "undo last apply")),
 }
 
+// ShortHelp implements help.KeyMap (A1).
+func (k keyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.Up, k.Down, k.Enter, k.Esc, k.Help, k.Quit}
+}
+
+// FullHelp implements help.KeyMap (A1).
+func (k keyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.Up, k.Down, k.Enter, k.Esc},
+		{k.Add, k.Delete, k.Edit, k.Retry, k.Test},
+		{k.Undo, k.Help, k.Quit},
+	}
+}
+
 type model struct {
 	providerUseCases *application.ProviderUseCases
 	switchUseCases   *application.SwitchUseCases
+
+	help help.Model // persistent help footer (A1)
 
 	currentView viewType
 	width       int
@@ -189,18 +242,38 @@ type model struct {
 	restoreSelectedPath string
 	restoreBackups      []application.BackupOption
 
+	// Diff viewport
+	diffViewport viewport.Model // scrollable viewport for the dry-run diff
+	diffContent  string         // rendered diff text set into the viewport
+
 	// ponytail: updateInfo removed — unused. Re-add when update notification is implemented.
+
+	version string // semver without "v" prefix, set at startup from main
 }
 
-func NewModel(providerUseCases *application.ProviderUseCases, switchUseCases *application.SwitchUseCases) *model {
+func NewModel(providerUseCases *application.ProviderUseCases, switchUseCases *application.SwitchUseCases, version string) *model {
 	s := spinner.New(spinner.WithSpinner(spinner.MiniDot))
-	s.Style = lipgloss.NewStyle().Foreground(aimuxT.AccentAlt)
+	s.Style = lipgloss.NewStyle().Foreground(aimuxT.Accent)
+
+	h := help.New()
+	h.Styles.ShortKey = lipgloss.NewStyle().Foreground(aimuxT.Accent)
+	h.Styles.ShortDesc = lipgloss.NewStyle().Foreground(aimuxT.TextSecondary)
+	h.Styles.ShortSeparator = lipgloss.NewStyle().Foreground(aimuxT.TextMuted)
+	h.ShowAll = false
+
+	vp := viewport.New(0, 0)
+	// ponytail: no custom keymap for viewport — parent routes ↑/k ↓/j directly.
+	vp.Style = aimuxT.Viewport
+
 	return &model{
 		providerUseCases: providerUseCases,
 		switchUseCases:   switchUseCases,
+		version:          version,
 		currentView:      dashboardView,
 		menuSelected:     menuItemManageProviders,
 		spinner:          s,
+		help:             h,
+		diffViewport:     vp,
 	}
 }
 
@@ -211,6 +284,73 @@ func (m *model) loadingCmd(msg string) tea.Cmd {
 	return func() tea.Msg {
 		return spinner.TickMsg{Time: time.Now()}
 	}
+}
+
+// setForm stores a form and applies terminal width AND height so forms fit
+// the screen (A3). Uses bodyW/bodyH from the computed layout so forms don't
+// overflow the header/footer chrome.
+func (m *model) setForm(f *huh.Form) {
+	m.form = f
+	layout := m.computeLayout()
+	w := m.width
+	h := 0
+	if layout.bodyW > 0 {
+		w = layout.bodyW
+		h = layout.bodyH
+	}
+	m.form = m.form.WithWidth(w)
+	if h > 0 {
+		m.form = m.form.WithHeight(h)
+	}
+}
+
+// padded wraps content with terminal width and bg color so the TUI fills
+// the screen instead of sitting in a corner.
+// Note: per-line bg painting breaks huh form internals, so we only apply
+// bg+width at the wrapper level. Full-screen fill is handled by chrome().
+func (m *model) padded(content string) string {
+	if m.width == 0 {
+		return content
+	}
+	return lipgloss.NewStyle().
+		Background(aimuxT.BgBase).
+		Width(m.width).
+		Padding(1, 2).
+		Render(content)
+}
+
+// padRightBg appends bg-colored spaces to the right of s until it reaches
+// width. Safe for ANSI content: only APPENDS, never re-renders existing
+// content (unlike the broken line-by-line approach).
+func padRightBg(s string, width int, bg lipgloss.Color) string {
+	w := lipgloss.Width(s)
+	if w >= width {
+		return s
+	}
+	pad := strings.Repeat(" ", width-w)
+	return s + lipgloss.NewStyle().Background(bg).Render(pad)
+}
+
+// fillBody pads body content to exactly bodyH lines with bg, filling the
+// remaining screen. Side-rail prefix removed — bg fills the whole viewport
+// cleanly. Right-fill is append-only (preserves ANSI from huh forms).
+func (m *model) fillBody(content string, bodyH int) string {
+	if m.width == 0 {
+		return content
+	}
+	bg := aimuxT.BgBase
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = padRightBg(line, m.width, bg)
+	}
+	emptyLine := padRightBg("", m.width, bg)
+	for len(lines) < bodyH {
+		lines = append(lines, emptyLine)
+	}
+	if len(lines) > bodyH && bodyH > 0 {
+		lines = lines[:bodyH]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m *model) Init() tea.Cmd {
@@ -225,15 +365,54 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+
+		// Cascade resize to all dimension-dependent subcomponents
+		m.help.Width = msg.Width
+
+		// Resize the active form (huh) with new body dimensions
+		if m.form != nil {
+			m.setForm(m.form)
+		}
+
+		// Resize the diff viewport (switch confirmation with dry-run)
+		if m.diffContent != "" {
+			bodyH := m.height - 2
+			// renderConfirmationView has ~3 info-header lines before viewport
+			vpHeight := bodyH - 3
+			if vpHeight < 5 {
+				vpHeight = 5
+			}
+			m.diffViewport.Width = m.width - 6
+			m.diffViewport.Height = vpHeight
+			m.diffViewport.SetContent(m.diffContent)
+		}
+
+		// For very small terminals, ignore further processing —
+		// View() renders the contingency message above min size check.
+		if m.width < minTermWidth || m.height < minTermHeight {
+			return m, nil
+		}
+	}
+
+	// Help overlay: ? toggles it on (works in forms too); any key dismisses (A1).
+	if k, ok := msg.(tea.KeyMsg); ok {
+		if m.showHelp {
+			m.showHelp = false
+			return m, nil
+		}
+		if key.Matches(k, menuKeys.Help) {
+			m.showHelp = true
+			return m, nil
+		}
 	}
 
 	if m.form != nil {
-		// Intercept Esc for single-select forms before huh processes it.
-		// huh treats Esc as "previous field" and silently swallows it
-		// when no previous field exists (single-group forms).
+		// Intercept Esc before huh processes it.
+		// huh treats Esc as "previous field" inside multi-field forms,
+		// but the user expects Esc = go back regardless of cursor position.
 		switch k := msg.(type) {
 		case tea.KeyMsg:
-			if key.Matches(k, menuKeys.Esc) && m.isSingleSelectForm() {
+			if key.Matches(k, menuKeys.Esc) {
 				m.form = nil
 				prev := m.previousView()
 				m.currentView = prev
@@ -247,7 +426,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !ok {
 			return m, cmd
 		}
-		m.form = f
+		m.setForm(f)
 
 		if f.State == huh.StateCompleted {
 			return m.handleFormCompletion()
@@ -288,13 +467,44 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case notificationMsg:
 		m.notification = msg.message
-		m.notificationIsMsg = !msg.isError
-		if msg.isError {
-			log.Printf("TUI error: %s", msg.message)
+		// Determine severity
+		sev := msg.severity
+		if sev == "" {
+			if msg.isError {
+				sev = "error"
+			} else {
+				sev = "info"
+			}
 		}
-		// Error notifications persist until dismissed (Esc). Success auto-dismiss.
-		if !msg.isError {
-			return m, tea.Tick(4*time.Second, func(_ time.Time) tea.Msg {
+		// Icon per severity
+		icon := "✓"
+		switch sev {
+		case "warn":
+			icon = "⚠"
+			m.notification = icon + " " + m.notification
+			log.Printf("TUI warn: %s", msg.message)
+		case "error":
+			icon = "✗"
+			m.notification = icon + " " + m.notification
+			log.Printf("TUI error: %s", msg.message)
+		default:
+			m.notification = icon + " " + m.notification
+		}
+		m.notificationIsMsg = (sev != "error")
+		// Per-severity TTL with message-level override
+		ttl := msg.ttl
+		if ttl == 0 {
+			switch sev {
+			case "info":
+				ttl = 3 * time.Second
+			case "warn":
+				ttl = 5 * time.Second
+			case "error":
+				ttl = 0 // persist until Esc
+			}
+		}
+		if ttl > 0 {
+			return m, tea.Tick(ttl, func(_ time.Time) tea.Msg {
 				return clearNotificationMsg{}
 			})
 		}
@@ -308,6 +518,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.loadingMsg = ""
 		m.switchDryRun = nil
+		m.diffContent = ""
+		m.diffViewport.SetContent("")
 		if msg.err != nil {
 			return m, func() tea.Msg {
 				return notificationMsg{message: fmt.Sprintf("Apply failed: %s", msg.err.Error()), isError: true}
@@ -383,15 +595,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Help overlay: any key dismisses
-	if m.showHelp {
-		m.showHelp = false
-		return m, nil
-	}
-
-	// Toggle help from any non-form view
-	if key.Matches(msg, menuKeys.Help) {
-		m.showHelp = true
+	// Loading guard: block ALL navigation input during async operations.
+	// Only Quit (Ctrl+C / q) is allowed to exit cleanly.
+	if m.loading {
+		if key.Matches(msg, menuKeys.Quit) {
+			return m, tea.Quit
+		}
 		return m, nil
 	}
 
@@ -447,14 +656,14 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, menuKeys.Add):
 			m.currentView = addProviderView
 			m.addProviderResult = AddProviderResult{}
-			m.form = NewAddProviderForm(&m.addProviderResult)
+			m.setForm(NewAddProviderForm(&m.addProviderResult))
 			return m, m.form.Init()
 		case key.Matches(msg, menuKeys.Delete):
 			if m.selectedProviderID > 0 {
 				m.currentView = deleteProviderView
 				m.deleteConfirm = false
 				providerName := m.getProviderName(m.selectedProviderID)
-				m.form = NewDeleteConfirmForm(providerName, &m.deleteConfirm)
+				m.setForm(NewDeleteConfirmForm(providerName, &m.deleteConfirm))
 				return m, m.form.Init()
 			}
 		case key.Matches(msg, menuKeys.Retry):
@@ -485,7 +694,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				provider := m.getProvider(m.selectedProviderID)
 				if provider != nil {
 					m.currentView = editProviderView
-					m.form = NewEditProviderForm(*provider, &m.editProviderResult)
+					m.setForm(NewEditProviderForm(*provider, &m.editProviderResult))
 					return m, m.form.Init()
 				}
 			}
@@ -506,10 +715,10 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			providers, _ := m.providerUseCases.List()
 			if len(providers) == 0 {
 				return m, func() tea.Msg {
-					return notificationMsg{message: "No providers available", isError: true}
+					return notificationMsg{message: "No providers available", isError: false, severity: "warn"}
 				}
 			}
-			m.form = NewSelectProviderForm(providers, &m.switchProviderID)
+			m.setForm(NewSelectProviderForm(providers, &m.switchProviderID))
 			return m, m.form.Init()
 		case key.Matches(msg, menuKeys.Edit):
 			return m.editSelectedBinding()
@@ -522,7 +731,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			idx := m.switchSelectedBindingIdx
 			if idx < 0 || idx >= len(m.switchCLIBindings) {
 				return m, func() tea.Msg {
-					return notificationMsg{message: "No provider selected", isError: true}
+					return notificationMsg{message: "No provider selected", isError: false, severity: "warn"}
 				}
 			}
 			b := m.switchCLIBindings[idx]
@@ -530,7 +739,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.switchDeleteConfirm = false
 			providerName := b.ProviderName
 			m.currentView = deleteBindingConfirmView
-			m.form = NewDeleteConfirmForm(providerName, &m.switchDeleteConfirm)
+			m.setForm(NewDeleteConfirmForm(providerName, &m.switchDeleteConfirm))
 			return m, m.form.Init()
 		case key.Matches(msg, menuKeys.Up):
 			if m.switchSelectedBindingIdx > 0 {
@@ -558,7 +767,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.currentView = switchMapModelsView
 				form, extractFn := NewMapModelsForm(m.switchEnvVars, m.switchProviderModels)
 				m.switchExtractFn = extractFn
-				m.form = form
+				m.setForm(form)
 				return m, m.form.Init()
 			}
 			// Rebuild model selection with previous choices pre-selected
@@ -568,14 +777,14 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					defaultModel = m.switchRegisteredModels[0]
 				}
 				m.switchSingleModelResult = SelectSingleModelResult{ModelName: defaultModel}
-				m.form = NewSelectSingleModelForm(m.switchProviderModels, &m.switchSingleModelResult)
+				m.setForm(NewSelectSingleModelForm(m.switchProviderModels, &m.switchSingleModelResult))
 			} else {
 				preselected := make(map[string]bool)
 				for _, name := range m.switchRegisteredModels {
 					preselected[name] = true
 				}
 				m.switchRegisterResult = RegisterModelsResult{}
-				m.form = NewRegisterModelsForm(m.switchProviderModels, preselected, &m.switchRegisterResult)
+				m.setForm(NewRegisterModelsForm(m.switchProviderModels, preselected, &m.switchRegisterResult))
 			}
 			m.currentView = switchSelectModelsView
 			return m, m.form.Init()
@@ -592,14 +801,33 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case switchConfirmationView:
 		switch {
+		// Scroll keys: forward to viewport
+		case key.Matches(msg, menuKeys.Up), key.Matches(msg, menuKeys.Down):
+			if m.switchDryRun != nil {
+				var cmd tea.Cmd
+				m.diffViewport, cmd = m.diffViewport.Update(msg)
+				return m, cmd
+			}
+			// fallthrough when dry run is nil
+			return m, nil
+		case msg.Type == tea.KeyPgUp || msg.Type == tea.KeyPgDown ||
+			msg.Type == tea.KeyHome || msg.Type == tea.KeyEnd:
+			if m.switchDryRun != nil {
+				var cmd tea.Cmd
+				m.diffViewport, cmd = m.diffViewport.Update(msg)
+				return m, cmd
+			}
+			return m, nil
 		case key.Matches(msg, menuKeys.Esc):
 			m.switchDryRun = nil
+			m.diffContent = ""
 			m.switchBackupPath = ""
 			m.resetSwitchState()
 			m.currentView = dashboardView
 			return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
 		case key.Matches(msg, menuKeys.Enter):
 			if m.switchDryRun == nil {
+				m.diffContent = ""
 				m.switchBackupPath = ""
 				m.resetSwitchState()
 				m.currentView = dashboardView
@@ -650,7 +878,7 @@ func (m *model) handleMenuSelection() (tea.Model, tea.Cmd) {
 		m.targetCLIs = clis
 		m.currentView = manageCLIView
 		m.selectedCLIID = 0
-		m.form = NewSelectCLIForm(clis, &m.selectedCLIID)
+		m.setForm(NewSelectCLIForm(clis, &m.selectedCLIID))
 		return m, m.form.Init()
 	case menuItemRestore:
 		return m.enterRestoreFlow()
@@ -673,7 +901,7 @@ func (m *model) startSwitchFlow() (tea.Model, tea.Cmd) {
 
 	m.targetCLIs = clis
 	m.switchTargetCLIID = 0
-	m.form = NewSelectTargetCLIForm(clis, &m.switchTargetCLIID)
+	m.setForm(NewSelectTargetCLIForm(clis, &m.switchTargetCLIID))
 	m.form.WithHeight(10)
 
 	return m, m.form.Init()
@@ -730,17 +958,17 @@ func (m *model) reenterFormForView(view viewType) tea.Cmd {
 		return nil
 	case switchTargetCLIView:
 		m.switchTargetCLIID = 0
-		m.form = NewSelectTargetCLIForm(m.targetCLIs, &m.switchTargetCLIID)
+		m.setForm(NewSelectTargetCLIForm(m.targetCLIs, &m.switchTargetCLIID))
 		m.form.WithHeight(10)
 		return m.form.Init()
 	case switchProviderView:
 		providers, err := m.providerUseCases.List()
 		if err != nil || len(providers) == 0 {
 			return func() tea.Msg {
-				return notificationMsg{message: "No providers available", isError: true}
+				return notificationMsg{message: "No providers available", isError: false, severity: "warn"}
 			}
 		}
-		m.form = NewSelectProviderForm(providers, &m.switchProviderID)
+		m.setForm(NewSelectProviderForm(providers, &m.switchProviderID))
 		return m.form.Init()
 	case restoreCLIView:
 		return m.startRestoreCLIForm()
@@ -754,7 +982,7 @@ func (m *model) startRestoreCLIForm() tea.Cmd {
 	m.restoreCLIName = ""
 	m.restoreSelectedPath = ""
 	m.restoreBackups = nil
-	m.form = NewSelectCLIForm(m.targetCLIs, &m.selectedCLIID)
+	m.setForm(NewSelectCLIForm(m.targetCLIs, &m.selectedCLIID))
 	return m.form.Init()
 }
 
@@ -762,17 +990,17 @@ func (m *model) enterSwitchView(view viewType) tea.Cmd {
 	switch view {
 	case switchTargetCLIView:
 		m.switchTargetCLIID = 0
-		m.form = NewSelectTargetCLIForm(m.targetCLIs, &m.switchTargetCLIID)
+		m.setForm(NewSelectTargetCLIForm(m.targetCLIs, &m.switchTargetCLIID))
 		m.form.WithHeight(10)
 		return m.form.Init()
 	case switchProviderView:
 		providers, err := m.providerUseCases.List()
 		if err != nil || len(providers) == 0 {
 			return func() tea.Msg {
-				return notificationMsg{message: "No providers available", isError: true}
+				return notificationMsg{message: "No providers available", isError: false, severity: "warn"}
 			}
 		}
-		m.form = NewSelectProviderForm(providers, &m.switchProviderID)
+		m.setForm(NewSelectProviderForm(providers, &m.switchProviderID))
 		return m.form.Init()
 	}
 	return nil
@@ -788,9 +1016,8 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		discoveryURL := strings.TrimSpace(m.addProviderResult.DiscoveryURL)
 		apiKey := strings.TrimSpace(m.addProviderResult.APIKey)
 		authToken := strings.TrimSpace(m.addProviderResult.AuthToken)
-		apiType := domain.ApiType(m.addProviderResult.ApiType)
-
-		_, err := m.providerUseCases.Add(name, baseURL, discoveryURL, apiKey, authToken, apiType)
+		dcw := parseContextWindowStr(m.addProviderResult.DefaultContextWindowStr)
+		_, err := m.providerUseCases.Add(name, baseURL, discoveryURL, apiKey, authToken, dcw)
 		if err != nil {
 			return m, tea.Batch(func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }, func() tea.Msg {
 				return notificationMsg{message: fmt.Sprintf("Add failed: %s", err.Error()), isError: true}
@@ -807,9 +1034,8 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		discoveryURL := strings.TrimSpace(m.editProviderResult.DiscoveryURL)
 		apiKey := strings.TrimSpace(m.editProviderResult.APIKey)
 		authToken := strings.TrimSpace(m.editProviderResult.AuthToken)
-		apiType := domain.ApiType(m.editProviderResult.ApiType)
-
-		if err := m.providerUseCases.Update(m.selectedProviderID, baseURL, discoveryURL, apiKey, authToken, apiType); err != nil {
+		dcw := parseContextWindowStr(m.editProviderResult.DefaultContextWindowStr)
+		if err := m.providerUseCases.Update(m.selectedProviderID, baseURL, discoveryURL, apiKey, authToken, dcw); err != nil {
 			return m, tea.Batch(func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }, func() tea.Msg {
 				return notificationMsg{message: fmt.Sprintf("Update failed: %s", err.Error()), isError: true}
 			})
@@ -858,10 +1084,10 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		providers, err := m.providerUseCases.List()
 		if err != nil || len(providers) == 0 {
 			return m, func() tea.Msg {
-				return notificationMsg{message: "No providers available", isError: true}
+				return notificationMsg{message: "No providers available", isError: false, severity: "warn"}
 			}
 		}
-		m.form = NewSelectProviderForm(providers, &m.switchProviderID)
+		m.setForm(NewSelectProviderForm(providers, &m.switchProviderID))
 		return m, m.form.Init()
 
 	case switchProviderView:
@@ -872,13 +1098,13 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 			m.switchRemoveMode = false
 			if m.switchProviderID == 0 {
 				return m, func() tea.Msg {
-					return notificationMsg{message: "No provider selected", isError: true}
+					return notificationMsg{message: "No provider selected", isError: false, severity: "warn"}
 				}
 			}
 			m.switchDeleteConfirm = false
 			providerName := m.getProviderName(m.switchProviderID)
 			m.currentView = deleteBindingConfirmView
-			m.form = NewDeleteConfirmForm(providerName, &m.switchDeleteConfirm)
+			m.setForm(NewDeleteConfirmForm(providerName, &m.switchDeleteConfirm))
 			return m, m.form.Init()
 		}
 
@@ -891,7 +1117,7 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		}
 		if targetCLI == nil {
 			return m, func() tea.Msg {
-				return notificationMsg{message: "Target CLI not found", isError: true}
+				return notificationMsg{message: "Target CLI not found", isError: false, severity: "warn"}
 			}
 		}
 
@@ -914,16 +1140,16 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 			m.currentView = switchProviderView
 			providers, listErr := m.providerUseCases.List()
 			if listErr == nil && len(providers) > 0 {
-				m.form = NewSelectProviderForm(providers, &m.switchProviderID)
+				m.setForm(NewSelectProviderForm(providers, &m.switchProviderID))
 				return m, tea.Batch(
 					m.form.Init(),
 					func() tea.Msg {
-						return notificationMsg{message: "No models for this provider. Try retrying fetch.", isError: true}
+						return notificationMsg{message: "No models for this provider. Try retrying fetch.", isError: false, severity: "warn"}
 					},
 				)
 			}
 			return m, func() tea.Msg {
-				return notificationMsg{message: "No models available for this provider", isError: true}
+				return notificationMsg{message: "No models available for this provider", isError: false, severity: "warn"}
 			}
 		}
 		m.switchProviderModels = models
@@ -937,7 +1163,7 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 			m.currentView = switchMapModelsView
 			form, extractFn := NewMapModelsForm(envVars, models)
 			m.switchExtractFn = extractFn
-			m.form = form
+			m.setForm(form)
 			return m, m.form.Init()
 		}
 
@@ -945,7 +1171,7 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 			// Copilot uses a single model via COPILOT_MODEL
 			m.switchSingleModelResult = SelectSingleModelResult{}
 			m.currentView = switchSelectModelsView
-			m.form = NewSelectSingleModelForm(models, &m.switchSingleModelResult)
+			m.setForm(NewSelectSingleModelForm(models, &m.switchSingleModelResult))
 			return m, m.form.Init()
 		}
 
@@ -953,8 +1179,7 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		m.switchProviderModels = models
 		m.switchRegisterResult = RegisterModelsResult{}
 		m.currentView = switchSelectModelsView
-		m.form = NewSelectModelsForm(models, &m.switchRegisterResult)
-		return m, m.form.Init()
+		m.setForm(NewSelectModelsForm(models, &m.switchRegisterResult))
 		return m, m.form.Init()
 
 	case switchSelectModelsView:
@@ -982,9 +1207,9 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		}
 		if len(selected) == 0 {
 			if m.switchIsCopilot {
-				m.form = NewSelectSingleModelForm(m.switchProviderModels, &m.switchSingleModelResult)
+				m.setForm(NewSelectSingleModelForm(m.switchProviderModels, &m.switchSingleModelResult))
 			} else {
-				m.form = NewSelectModelsForm(m.switchProviderModels, &m.switchRegisterResult)
+				m.setForm(NewSelectModelsForm(m.switchProviderModels, &m.switchRegisterResult))
 			}
 			m.currentView = switchSelectModelsView
 			return m, m.form.Init()
@@ -997,6 +1222,17 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 			}
 		}
 		m.switchModelMetadataSummary = buildMetadataSummary(selected, m.switchProviderID, m.switchUseCases)
+		// Save config content BEFORE Apply so the diff shows what changed.
+		m.switchDryRunCurrentConfig = ""
+		for _, c := range m.targetCLIs {
+			if c.ID == m.switchTargetCLIID && c.ConfigPath != "" {
+				data, err := os.ReadFile(c.ConfigPath)
+				if err == nil && len(data) > 0 {
+					m.switchDryRunCurrentConfig = string(data)
+				}
+				break
+			}
+		}
 		if _, err := m.switchUseCases.Apply(m.switchTargetCLIID, 0); err != nil {
 			log.Printf("config regenerate after model selection failed: %v", err)
 		}
@@ -1054,7 +1290,7 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		}
 		m.currentView = editCLIPathView
 		m.editCLIPathResult = EditCLIPathResult{}
-		m.form = NewEditCLIPathForm(cli, &m.editCLIPathResult)
+		m.setForm(NewEditCLIPathForm(cli, &m.editCLIPathResult))
 		return m, m.form.Init()
 
 	case editCLIPathView:
@@ -1114,7 +1350,7 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		if cliName == "" {
 			m.currentView = dashboardView
 			return m, func() tea.Msg {
-				return notificationMsg{message: "CLI not found", isError: true}
+				return notificationMsg{message: "CLI not found", isError: false, severity: "warn"}
 			}
 		}
 		m.restoreCLIName = cliName
@@ -1133,7 +1369,7 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		}
 		m.restoreBackups = backups
 		m.currentView = restoreBackupView
-		m.form = NewRestoreBackupForm(backups, &m.restoreSelectedPath)
+		m.setForm(NewRestoreBackupForm(backups, &m.restoreSelectedPath))
 		return m, m.form.Init()
 
 	case restoreBackupView:
@@ -1162,36 +1398,13 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 }
 
 var (
-	logo = []string{
-		`╭──────────────────────────╮`,
-		`│       ◆  aimux  ◆        │`,
-		`│    AI Multiplexer        │`,
-		`╰──────────────────────────╯`,
-	}
-
 	titleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(aimuxT.Accent).
-			Padding(0, 2)
-
-	viewPadding = lipgloss.NewStyle().Padding(1, 2)
-
-	notifOKStyle = lipgloss.NewStyle().
-			Background(aimuxT.BgBase).
-			Foreground(aimuxT.Green).
-			Padding(0, 2).
-			Bold(true)
-
-	notifErrStyle = lipgloss.NewStyle().
-			Background(aimuxT.BgBase).
-			Foreground(aimuxT.Red).
-			Padding(0, 2).
-			Bold(true)
+		Bold(true).
+		Foreground(aimuxT.Accent).
+		Padding(0, 2)
 )
 
 func (m *model) renderDashboardSummary() string {
-	var b strings.Builder
-
 	activeProv := 0
 	errorProv := 0
 	for _, p := range m.providers {
@@ -1217,220 +1430,424 @@ func (m *model) renderDashboardSummary() string {
 	}
 	inactiveCLIs := len(m.targetCLIs) - activeCLIs
 
-	provStr := fmt.Sprintf("%d active", activeProv)
+	cyanNum := lipgloss.NewStyle().Foreground(aimuxT.Cyan).Bold(true)
+	mutedNum := lipgloss.NewStyle().Foreground(aimuxT.TextMuted)
+
+	provStr := cyanNum.Render(fmt.Sprintf("%d active", activeProv))
 	if errorProv > 0 {
-		provStr += fmt.Sprintf(", %d error", errorProv)
+		provStr += lipgloss.NewStyle().Foreground(aimuxT.Red).Render(fmt.Sprintf(", %d error", errorProv))
 	}
 
-	// Build a bordered summary box
-	summaryStyle := lipgloss.NewStyle().
-		Foreground(aimuxT.TextSecondary).
-		Padding(0, 2)
+	cliStr := cyanNum.Render(fmt.Sprintf("%d active", activeCLIs)) +
+		mutedNum.Render(fmt.Sprintf(", %d inactive", inactiveCLIs))
 
-	b.WriteString(aimuxT.Help.Render("Summary"))
-	b.WriteString("\n")
-	b.WriteString(summaryStyle.Render(fmt.Sprintf("Providers: %s", provStr)))
-	b.WriteString("\n")
-	b.WriteString(summaryStyle.Render(fmt.Sprintf("CLIs:      %d active, %d inactive", activeCLIs, inactiveCLIs)))
-	b.WriteString("\n\n")
+	labelStyle := lipgloss.NewStyle().Foreground(aimuxT.TextSecondary)
+	cardBody := lipgloss.JoinVertical(lipgloss.Left,
+		aimuxT.CardTitle.Render("Summary"),
+		"",
+		labelStyle.Render("Providers  ")+provStr,
+		labelStyle.Render("CLIs       ")+cliStr,
+	)
+	// Responsive width: 50% of terminal, min 40, max 60
+	w := m.width / 2
+	if w < 40 {
+		w = 40
+	}
+	if w > 60 {
+		w = 60
+	}
+	return aimuxT.Card.Width(w).Render(cardBody)
+}
 
-	return b.String()
+// isCenteredView returns true if the current view should use centered layout mode.
+// Most views use centered layout for consistent aesthetics. Only diff views use
+// full-width fluid layout to accommodate side-by-side panels.
+func (m *model) isCenteredView() bool {
+	switch m.currentView {
+	case switchConfirmationView:
+		// Diff view needs full-width for side-by-side panels
+		return false
+	default:
+		// All other views use centered layout
+		return true
+	}
 }
 
 func (m *model) View() string {
 	m.syncSwitchStep()
 
-	// Wrap form views with stepper for switch flow steps.
+	// Terminal too small: show contingency message instead of broken layout
+	if m.width > 0 && m.height > 0 && (m.width < minTermWidth || m.height < minTermHeight) {
+		return m.renderTooSmall()
+	}
+
+	// Help overlay takes over the full screen (A1).
+	if m.showHelp {
+		return m.renderHelpScreen()
+	}
+
+	layout := m.computeLayout()
+
+	// No terminal dimensions yet — return raw content.
+	if m.width == 0 {
+		return m.renderBodyContent()
+	}
+
+	// Compose: header + body + footer.
+	header := m.renderHeader()
+
+	// A8: loading overlay — centered spinner + message, blocking content
+	if m.loading {
+		body := m.renderLoadingOverlay(layout)
+		footer := m.renderFooter()
+		return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+	}
+
+	bodyRaw := m.renderBodyContent()
+
+	footer := m.renderFooter()
+
+	// Hybrid Adaptive Layout: alternate between centered and fluid modes
+	if m.isCenteredView() {
+		// Centered mode: fixed-width content floating in viewport center.
+		// Forms use Top vertical alignment so search/filter bar stays visible.
+		vPos := lipgloss.Center
+		if m.form != nil {
+			vPos = lipgloss.Top
+		}
+		body := lipgloss.Place(m.width, layout.bodyH, lipgloss.Center, vPos, bodyRaw)
+		return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+	}
+
+	// Fluid mode: full-width content stretching to terminal edges
+	// Confirmation view with dry-run renders its own scrollable viewport.
+	if m.currentView == switchConfirmationView && m.switchDryRun != nil {
+		bodyRaw = m.renderConfirmationView()
+		return lipgloss.JoinVertical(lipgloss.Left, header, bodyRaw, footer)
+	}
+	body := m.fillBody(bodyRaw, layout.bodyH)
+	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
+}
+
+// renderBodyContent returns the view-specific content WITHOUT chrome wrapping.
+// The caller (View) wraps it with header/footer/fill.
+func (m *model) renderBodyContent() string {
+	// Forms
 	if m.form != nil {
 		content := m.form.View()
 		if m.switchTotalSteps > 0 {
-			content = viewPadding.Render(m.renderSwitchStepper()) + "\n" + content
+			content = m.renderSwitchStepper() + "\n" + content
 		}
 		return content
 	}
 
-	if m.loading {
-		spin := m.spinner.View()
-		msg := m.loadingMsg
-		if msg == "" {
-			msg = "Working..."
-		}
-		bottom := aimuxT.Help.Render(fmt.Sprintf("%s %s", spin, msg))
-		return viewPadding.Render(bottom)
-	}
-
-	var content string
 	switch m.currentView {
 	case dashboardView:
 		summary := m.renderDashboardSummary()
 		menu := RenderMenu(m.menuSelected, len(m.providers) > 0)
-		// Render logo: first/last line in accent (border), middle lines in secondary
-		borderStyle := lipgloss.NewStyle().Foreground(aimuxT.Accent).Padding(0, 2)
-		contentStyle := lipgloss.NewStyle().Foreground(aimuxT.TextSecondary).Padding(0, 2)
-		logoLines := []string{
-			borderStyle.Render(logo[0]),
-			contentStyle.Render(logo[1]),
-			contentStyle.Render(logo[2]),
-			borderStyle.Render(logo[3]),
-		}
-		logoStr := lipgloss.JoinVertical(lipgloss.Left, logoLines...)
 
-		// Welcome message on first run (no providers configured)
+		// ASCII art logo — full AIMUX logotype
+		logoBlock := RenderLogo(0, m.version)
+
+		// Welcome message (first-run only)
 		var welcome string
 		if len(m.providers) == 0 {
-			welcomeBox := lipgloss.NewStyle().
-				Foreground(aimuxT.TextSecondary).
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(aimuxT.Accent).
-				Padding(1, 2).
-				Render(
-					lipgloss.JoinVertical(lipgloss.Left,
-						lipgloss.NewStyle().Bold(true).Foreground(aimuxT.Accent).Render("Welcome to aimux! 🎯"),
-						"",
-						"Centralize your AI provider credentials and switch between",
-						"providers for Claude Code, OpenCode, Codex, Copilot, and pi.",
-						"",
-						fmt.Sprintf("Press Enter on %s to add your first provider.",
-							lipgloss.NewStyle().Bold(true).Foreground(aimuxT.Accent).Render("Manage Providers")),
-					),
-				)
-			welcome = "\n" + welcomeBox + "\n"
+			welcome = aimuxT.Help.Render("Welcome to aimux! 🎯 — Centralize your AI provider credentials and switch between providers for Claude Code, OpenCode, Codex, Copilot, and pi.")
 		}
 
-		content = lipgloss.JoinVertical(lipgloss.Left, logoStr, summary, welcome, menu)
-		content = viewPadding.Render(content)
+		var parts []string
+		parts = append(parts, logoBlock, "")
+		if summary != "" {
+			parts = append(parts, summary, "")
+		}
+		if welcome != "" {
+			parts = append(parts, welcome, "")
+		}
+		parts = append(parts, menu)
+
+		content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+		return content
 
 	case providerListView:
-		content = RenderProviderList(m.providers, m.selectedProviderID, m.width, m.allModels, m.activeMultiplexes)
-		content = viewPadding.Render(content)
+		return RenderProviderList(m.providers, m.selectedProviderID, m.width, m.allModels, m.activeMultiplexes)
 
 	case switchManageBindingsView:
-		content = m.renderManageBindings()
-		content = lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), content)
-		content = viewPadding.Render(content)
+		content := m.renderManageBindings()
+		return lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), content)
 
 	case switchAdvancedConfigView:
-		content = m.renderAdvancedConfigReview()
-		content = lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), content)
-		content = viewPadding.Render(content)
+		content := m.renderAdvancedConfigReview()
+		return lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), content)
 
 	case switchConfirmationView:
-		if m.switchDryRun != nil {
-			var info strings.Builder
-			info.WriteString(aimuxT.Title.Render("Dry-run Preview"))
-			info.WriteString("\n\n")
-			info.WriteString(aimuxT.ItemDesc.Render(fmt.Sprintf("Target CLI:  %s", m.switchDryRun.CLIName)))
-			info.WriteString("\n")
-			info.WriteString(aimuxT.ItemDesc.Render(fmt.Sprintf("Config:      %s", m.switchDryRun.ConfigPath)))
-			info.WriteString("\n\n")
-
-			// Build left panel: current config
-			var leftBoxContent []string
-			oldLines := strings.Split(m.switchDryRunCurrentConfig, "\n")
-			if len(oldLines) > 1 || (len(oldLines) == 1 && oldLines[0] != "") {
-				maxLines := 12
-				truncated := len(oldLines) > maxLines
-				if truncated {
-					oldLines = oldLines[:maxLines]
-				}
-				for _, line := range oldLines {
-					leftBoxContent = append(leftBoxContent, fmt.Sprintf("│ %s", line))
-				}
-				if truncated {
-					leftBoxContent = append(leftBoxContent, "│ ...")
-				}
-			} else {
-				leftBoxContent = append(leftBoxContent, "│ (no existing config)")
-			}
-			leftPanel := lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(aimuxT.TextDim).
-				Foreground(aimuxT.TextSecondary).
-				Padding(0, 1).
-				Width((m.width-10)/2 - 2).
-				Render(
-					lipgloss.JoinVertical(lipgloss.Left,
-						append(
-							[]string{lipgloss.NewStyle().Bold(true).Foreground(aimuxT.TextDim).Render("Current"), ""},
-							leftBoxContent...,
-						)...,
-					),
-				)
-
-			// Build right panel: new env vars
-			var rightBoxContent []string
-			for k, v := range m.switchDryRun.EnvVars {
-				if v != "" {
-					rightBoxContent = append(rightBoxContent, fmt.Sprintf("│ %s = %s", k, v))
-				}
-			}
-			if len(rightBoxContent) == 0 {
-				rightBoxContent = append(rightBoxContent, "│ (no changes)")
-			}
-			rightPanel := lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(aimuxT.Accent).
-				Foreground(aimuxT.Green).
-				Padding(0, 1).
-				Width((m.width-10)/2 - 2).
-				Render(
-					lipgloss.JoinVertical(lipgloss.Left,
-						append(
-							[]string{lipgloss.NewStyle().Bold(true).Foreground(aimuxT.Accent).Render("New"), ""},
-							rightBoxContent...,
-						)...,
-					),
-				)
-
-			sideBySide := lipgloss.JoinHorizontal(lipgloss.Top, leftPanel, "   ", rightPanel)
-
-			b := strings.Builder{}
-			b.WriteString(info.String())
-			b.WriteString(sideBySide)
-			b.WriteString("\n")
-			b.WriteString(aimuxT.Help.Render("Enter = Apply · Esc = Abort"))
-			content = viewPadding.Render(b.String())
-		} else {
-			var sb strings.Builder
-			sb.WriteString(aimuxT.Title.Render("Profile Activated"))
-			sb.WriteString("\n\n")
-			sb.WriteString(aimuxT.ItemDesc.Render("The config has been written and multiplex is active."))
-			sb.WriteString("\n")
-			if m.switchBackupPath != "" {
-				sb.WriteString(aimuxT.ItemDesc.Render(fmt.Sprintf("Backup saved to:")))
-				sb.WriteString("\n")
-				sb.WriteString(aimuxT.ItemDesc.Render(fmt.Sprintf("  %s", m.switchBackupPath)))
-				sb.WriteString("\n")
-			}
-			sb.WriteString("\n")
-			sb.WriteString(aimuxT.Help.Render("Press Enter or Esc to return to dashboard"))
-			content = viewPadding.Render(sb.String())
-		}
+		return m.renderConfirmationView()
 
 	default:
-		content = "Loading..."
+		return "Loading..."
+	}
+}
+
+// renderConfirmationView renders the dry-run or post-apply confirmation.
+// Dry-run mode uses a scrollable viewport with a compact diff.
+// Post-apply mode shows a static success message.
+func (m *model) renderConfirmationView() string {
+	if m.switchDryRun != nil {
+		var b strings.Builder
+		b.WriteString(aimuxT.Title.Render("Dry-run Preview"))
+		b.WriteString("\n")
+		b.WriteString(aimuxT.ItemDesc.Render(fmt.Sprintf("Target CLI:  %s  ·  Config:  %s", m.switchDryRun.CLIName, m.switchDryRun.ConfigPath)))
+		b.WriteString("\n\n")
+		b.WriteString(m.diffViewport.View())
+		return b.String()
 	}
 
-	// Prepend stepper for other switch views not covered above (already added for manage/advancedConfig/confirmation)
-	if m.switchTotalSteps > 0 && content != "" {
-		switch m.currentView {
-		case switchTargetCLIView, switchProviderView, switchMapModelsView, switchSelectModelsView:
-			// These use forms and are handled above.
-		default:
-			// Already handled above for manageView/advancedConfig/confirmation.
+	var sb strings.Builder
+	sb.WriteString(aimuxT.Title.Render("Profile Activated"))
+	sb.WriteString("\n\n")
+	sb.WriteString(aimuxT.ItemDesc.Render("The config has been written and multiplex is active."))
+	sb.WriteString("\n")
+	if m.switchBackupPath != "" {
+		sb.WriteString(aimuxT.ItemDesc.Render("Backup saved to:"))
+		sb.WriteString("\n")
+		sb.WriteString(aimuxT.ItemDesc.Render(fmt.Sprintf("  %s", m.switchBackupPath)))
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+// renderHeader renders the 1-line header bar: app name + view breadcrumb
+// with a clean native lipgloss.ThickBorder bottom edge. No side rails.
+func (m *model) renderHeader() string {
+	title := "aimux"
+	switch m.currentView {
+	case dashboardView:
+		title += "  ·  Dashboard"
+	case providerListView:
+		title += "  ·  Manage Providers"
+	case addProviderView:
+		title += "  ·  Add Provider"
+	case editProviderView:
+		title += "  ·  Edit Provider"
+	case deleteProviderView:
+		title += "  ·  Delete Provider"
+	case switchTargetCLIView, switchProviderView, switchMapModelsView,
+		switchSelectModelsView, switchAdvancedConfigView,
+		switchConfirmationView, switchManageBindingsView:
+		title += "  ·  Switch"
+		if m.switchStepLabel != "" {
+			title += "  ·  " + m.switchStepLabel
 		}
+	case manageCLIView, editCLIPathView:
+		title += "  ·  Manage CLIs"
+	case restoreCLIView, restoreBackupView:
+		title += "  ·  Restore"
 	}
 
+	// logo + breadcrumb, padded
+	logo := lipgloss.NewStyle().Bold(true).Foreground(aimuxT.Accent).Render("◆ aimux ◆")
+	crumb := lipgloss.NewStyle().Foreground(aimuxT.TextSecondary).Render(title[5:]) // strip "aimux"
+	head := lipgloss.JoinHorizontal(lipgloss.Left, logo, "  ", crumb)
+
+	// wrap in a top + bottom thick border, full width
+	bar := lipgloss.NewStyle().
+		Width(m.width).
+		Padding(0, 2).
+		Border(lipgloss.ThickBorder(), false, true, false, false). // bottom only
+		BorderForeground(aimuxT.Border).
+		Render(head)
+
+	return bar
+}
+
+// renderFooter renders the 1-line footer: help keybindings or notification.
+// Uses the unified nav bar style (purple bold key, muted desc, " • " separator).
+// No side rails — clean full-width bg.
+func (m *model) renderToastBanner() string {
+	msg := m.notification
+	maxW := m.width - 6
+	if maxW < 10 {
+		maxW = 10
+	}
+	if lipgloss.Width(msg) > maxW {
+		msg = truncateInline(msg, maxW)
+	}
+
+	var toastFg lipgloss.Color
+	if strings.HasPrefix(msg, "\u2717") {
+		toastFg = aimuxT.Red
+	} else if strings.HasPrefix(msg, "⚠") {
+		toastFg = aimuxT.Warn
+	} else {
+		toastFg = aimuxT.Green
+	}
+
+	toastStyle := lipgloss.NewStyle().Foreground(toastFg).Bold(true)
+	rendered := toastStyle.Render("  " + msg)
+
+	return lipgloss.NewStyle().
+		Width(m.width).
+		Border(lipgloss.ThickBorder(), true, true, false, false).
+		BorderForeground(aimuxT.Border).
+		Padding(0, 2).
+		Render(padRightBg(rendered, m.width-4, aimuxT.BgBase))
+}
+
+func (m *model) renderFooter() string {
 	if m.notification != "" {
-		style := notifErrStyle
-		if m.notificationIsMsg {
-			style = notifOKStyle
-		}
-		bar := style.Width(m.width).Render("  " + m.notification)
-		content = lipgloss.JoinVertical(lipgloss.Left, content, "\n", bar)
+		return m.renderToastBanner()
 	}
 
-	return content
+	bar := lipgloss.NewStyle().
+		Width(m.width).
+		Border(lipgloss.ThickBorder(), true, false, false, false).
+		BorderForeground(aimuxT.Border).
+		Padding(0, 2).
+		Render(m.renderNavBar())
+
+	return bar
+}
+
+// renderTooSmall renders a contingency message when the terminal is too small
+// for the TUI layout. Cleanly asks the user to resize instead of showing a
+// collapsed or broken layout.
+func (m *model) renderTooSmall() string {
+	msg := fmt.Sprintf("Terminal too small (%dx%d). Resize to at least %dx%d.",
+		m.width, m.height, minTermWidth, minTermHeight)
+	prompt := "Stretch the window or press q/Ctrl+C to quit."
+
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		lipgloss.NewStyle().Bold(true).Foreground(aimuxT.Warn).Render("⚠  Terminal Too Small"),
+		"",
+		lipgloss.NewStyle().Foreground(aimuxT.TextSecondary).Render(msg),
+		lipgloss.NewStyle().Foreground(aimuxT.TextMuted).Render(prompt),
+	)
+
+	return lipgloss.Place(m.width, m.height,
+		lipgloss.Center, lipgloss.Center,
+		content,
+	)
+}
+
+// renderLoadingOverlay shows a centered spinner + contextual message.
+// Covers the entire body area so the user sees progress feedback
+// and accidental inputs are visually blocked (keyboard guard is
+// in handleKeyMsg).
+func (m *model) renderLoadingOverlay(layout uiLayout) string {
+	spin := m.spinner.View()
+	msg := m.loadingMsg
+	if msg == "" {
+		msg = "Working..."
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Center,
+		lipgloss.NewStyle().
+			Foreground(aimuxT.Accent).
+			Render(fmt.Sprintf("%s %s", spin, msg)),
+		"",
+		lipgloss.NewStyle().
+			Foreground(aimuxT.TextMuted).
+			Render("(input disabled — please wait)"),
+	)
+
+	return lipgloss.Place(m.width, layout.bodyH,
+		lipgloss.Center, lipgloss.Center,
+		content,
+	)
+}
+
+// renderNavBar renders a row of key+description pairs with the unified style:
+// key = AccentPurple bold, description = TextMuted, separator = " • ".
+// Renders nothing if pairs is empty.
+func (m *model) renderNavBar() string {
+	keys := m.contextualKeys()
+	sep := aimuxT.FooterSep.Render(" • ")
+	parts := make([]string, 0, len(keys)*2)
+	for i, k := range keys {
+		if i > 0 {
+			parts = append(parts, sep)
+		}
+		parts = append(parts, aimuxT.FooterKey.Render(k.key))
+		parts = append(parts, " ")
+		parts = append(parts, aimuxT.FooterDesc.Render(k.desc))
+	}
+	return strings.Join(parts, "")
+}
+
+// navPair is one keybind display pair.
+type navPair struct{ key, desc string }
+
+// contextualKeys returns the keybinds relevant to the current view.
+// Form views fall through to a minimal "nav/confirm/back" set.
+func (m *model) contextualKeys() []navPair {
+	if m.form != nil {
+		return []navPair{
+			{"tab", "next"},
+			{"↑/↓", "move"},
+			{"enter", "confirm"},
+			{"esc", "back"},
+		}
+	}
+	switch m.currentView {
+	case dashboardView:
+		return []navPair{
+			{"↑/↓", "navigate"},
+			{"enter", "select"},
+			{"?", "help"},
+			{"q", "quit"},
+		}
+	case providerListView:
+		return []navPair{
+			{"↑/↓", "navigate"},
+			{"enter", "switch"},
+			{"a", "add"},
+			{"e", "edit"},
+			{"d", "delete"},
+			{"r", "retry"},
+			{"t", "test"},
+			{"esc", "back"},
+		}
+	case switchConfirmationView:
+		return []navPair{
+			{"↑/↓", "scroll"},
+			{"pgup/pgdn", "scroll"},
+			{"enter", "apply"},
+			{"esc", "back"},
+		}
+	case switchManageBindingsView:
+		return []navPair{
+			{"↑/↓", "navigate"},
+			{"enter", "edit"},
+			{"d", "remove"},
+			{"a", "add"},
+			{"esc", "back"},
+		}
+	default:
+		return []navPair{
+			{"enter", "confirm"},
+			{"esc", "back"},
+			{"?", "help"},
+		}
+	}
+}
+
+// renderHelpScreen renders the full help overlay (A1: revives dead `?`).
+func (m *model) renderHelpScreen() string {
+	content := m.renderHelpOverlay()
+	if m.width == 0 {
+		return content
+	}
+	layout := m.computeLayout()
+	header := m.renderHeader()
+	body := m.fillBody(content, layout.bodyH)
+	full := m.help.FullHelpView(menuKeys.FullHelp())
+	footer := lipgloss.NewStyle().
+		Width(m.width).
+		Border(lipgloss.ThickBorder(), true, false, false, false).
+		BorderForeground(aimuxT.Border).
+		Padding(0, 2).
+		Render(padRightBg(full, m.width-4, aimuxT.BgBase))
+	return lipgloss.JoinVertical(lipgloss.Left, header, body, footer)
 }
 
 func (m *model) refreshData() tea.Msg {
@@ -1643,6 +2060,8 @@ func (m *model) resetSwitchState() {
 	m.switchStep = 0
 	m.switchTotalSteps = 0
 	m.switchStepLabel = ""
+	m.diffContent = ""
+	m.diffViewport.SetContent("")
 }
 
 // editSelectedBinding opens the model selection form for the selected binding.
@@ -1650,13 +2069,13 @@ func (m *model) resetSwitchState() {
 func (m *model) editSelectedBinding() (tea.Model, tea.Cmd) {
 	if len(m.switchCLIBindings) == 0 {
 		return m, func() tea.Msg {
-			return notificationMsg{message: "No provider selected", isError: true}
+			return notificationMsg{message: "No provider selected", isError: false, severity: "warn"}
 		}
 	}
 	editIdx := m.switchSelectedBindingIdx
 	if editIdx < 0 || editIdx >= len(m.switchCLIBindings) {
 		return m, func() tea.Msg {
-			return notificationMsg{message: "No provider selected", isError: true}
+			return notificationMsg{message: "No provider selected", isError: false, severity: "warn"}
 		}
 	}
 	bp := m.switchCLIBindings[editIdx]
@@ -1678,14 +2097,14 @@ func (m *model) editSelectedBinding() (tea.Model, tea.Cmd) {
 				defaultModel = currentModels[0]
 			}
 			m.switchSingleModelResult = SelectSingleModelResult{ModelName: defaultModel}
-			m.form = NewSelectSingleModelForm(models, &m.switchSingleModelResult)
+			m.setForm(NewSelectSingleModelForm(models, &m.switchSingleModelResult))
 			m.currentView = switchSelectModelsView
 			return m, m.form.Init()
 		}
 	}
 
 	m.switchEditModelsResult = EditModelsResult{}
-	m.form = NewEditModelsForm(models, currentModels, &m.switchEditModelsResult)
+	m.setForm(NewEditModelsForm(models, currentModels, &m.switchEditModelsResult))
 	m.currentView = switchSelectModelsView
 	return m, m.form.Init()
 }
@@ -1706,13 +2125,25 @@ func (m *model) proceedToDryRun() (tea.Model, tea.Cmd) {
 	m.switchDryRun = dryRun
 	m.switchBackupPath = ""
 
-	// Read current config for diff preview
-	m.switchDryRunCurrentConfig = ""
-	if dryRun != nil && dryRun.ConfigPath != "" {
+	// Read current config for diff preview if not already saved (e.g. by model selection handler).
+	if m.switchDryRunCurrentConfig == "" && dryRun != nil && dryRun.ConfigPath != "" {
 		data, err := os.ReadFile(dryRun.ConfigPath)
 		if err == nil && len(data) > 0 {
 			m.switchDryRunCurrentConfig = string(data)
 		}
+	}
+
+	m.diffContent = generateCompactDiff(m.switchDryRunCurrentConfig, dryRun.EnvVars)
+	m.diffViewport.SetContent(m.diffContent)
+	// Size viewport for the current terminal dimensions if known.
+	if m.width > 0 && m.height > 0 {
+		bodyH := m.height - 2
+		vpHeight := bodyH - 3
+		if vpHeight < 5 {
+			vpHeight = 5
+		}
+		m.diffViewport.Width = m.width - 6
+		m.diffViewport.Height = vpHeight
 	}
 
 	m.currentView = switchConfirmationView
@@ -1731,10 +2162,9 @@ func (m *model) enterManageBindingsView() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// renderAdvancedConfigReview builds a human-readable summary of the model
-// metadata that will be written to the target CLI's config.
+// renderManageBindings renders the provider bindings list for a CLI.
+// Each binding is displayed as a bordered card with status and model mappings.
 func (m *model) renderManageBindings() string {
-	var b strings.Builder
 	cliName := ""
 	for _, tc := range m.targetCLIs {
 		if tc.ID == m.switchTargetCLIID {
@@ -1743,93 +2173,89 @@ func (m *model) renderManageBindings() string {
 		}
 	}
 
-	// Title
-	b.WriteString(aimuxT.Title.Render("Provider Bindings — " + cliName))
-	b.WriteString("\n\n")
+	title := aimuxT.CardTitle.Render("Provider Bindings · " + cliName)
 
 	if len(m.switchCLIBindings) == 0 {
-		b.WriteString("  No providers bound yet.")
-		b.WriteString("\n")
-	} else {
-		for i, bp := range m.switchCLIBindings {
-			selected := i == m.switchSelectedBindingIdx
-
-			// Build the model mappings string
-			mappings := ""
-			var mps map[string]string
-			if err := json.Unmarshal([]byte(bp.ModelMappings), &mps); err == nil {
-				models := []string{}
-				for k, v := range mps {
-					if k != "_registered" && v != "" {
-						models = append(models, v)
-					}
-				}
-				if len(models) > 0 {
-					mappings = strings.Join(models, ", ")
-				} else if reg, ok := mps["_registered"]; ok {
-					mappings = reg
-				}
-				if len(mappings) > 60 {
-					mappings = mappings[:57] + "..."
-				}
-			}
-
-			titleStyle := aimuxT.ItemTitle
-			detailStyle := aimuxT.ItemDesc
-			if selected {
-				titleStyle = aimuxT.SelTitle
-				detailStyle = aimuxT.SelDesc
-			}
-
-			// Render title line
-			b.WriteString(titleStyle.Render(" " + bp.ProviderName))
-			b.WriteString("\n")
-
-			// Render description lines
-			if mappings != "" {
-				b.WriteString(detailStyle.Render(fmt.Sprintf("  %s", mappings)))
-				b.WriteString("\n")
-			}
-			b.WriteString(detailStyle.Render(fmt.Sprintf("  %s", bp.ActivatedAt)))
-			b.WriteString("\n")
-
-			if i < len(m.switchCLIBindings)-1 {
-				spacer := aimuxT.Inactive.Copy().
-					Foreground(aimuxT.TextDim).
-					Render("  ")
-				b.WriteString(spacer)
-				b.WriteString("\n")
-			}
-		}
+		empty := aimuxT.Muted.Render("No providers bound yet.")
+		cardBody := lipgloss.JoinVertical(lipgloss.Left, title, "", empty)
+		return aimuxT.Card.Copy().Width(m.width - 8).Render(cardBody)
 	}
 
-	b.WriteString("\n")
-	b.WriteString(aimuxT.Help.Render("↑/↓ navigate · a add · d remove · e edit models · Enter apply all · Esc back"))
-	b.WriteString("\n")
-	return b.String()
+	var cards []string
+	for i, bp := range m.switchCLIBindings {
+		selected := i == m.switchSelectedBindingIdx
+
+		// Build the model mappings string
+		mappings := ""
+		var mps map[string]string
+		if err := json.Unmarshal([]byte(bp.ModelMappings), &mps); err == nil {
+			models := []string{}
+			for k, v := range mps {
+				if k != "_registered" && v != "" {
+					models = append(models, v)
+				}
+			}
+			if len(models) > 0 {
+				mappings = strings.Join(models, ", ")
+			} else if reg, ok := mps["_registered"]; ok {
+				mappings = reg
+			}
+			// ANSI-safe truncation: bounds the display width to 60 cells
+			const mappingMaxW = 60
+			mappings = truncateText(mappings, mappingMaxW)
+		}
+
+		// Style based on selection
+		nameStyle := aimuxT.ItemTitle
+		detailStyle := aimuxT.ItemDesc
+
+		nameLine := nameStyle.Render(bp.ProviderName)
+		if selected {
+			nameLine = lipgloss.NewStyle().
+				Foreground(aimuxT.Accent).
+				Render("▸ ") + nameLine
+		}
+
+		cardContent := nameLine
+		if mappings != "" {
+			cardContent += "\n" + detailStyle.Render("Models: "+mappings)
+		}
+		cardContent += "\n" + detailStyle.Render("Activated: "+bp.ActivatedAt)
+
+		cardStyle := aimuxT.Card.Copy().Width(60)
+		if selected {
+			cardStyle = cardStyle.BorderForeground(aimuxT.Accent)
+		}
+		cards = append(cards, cardStyle.Render(cardContent))
+	}
+
+	// Always vertical list for clear selection visibility
+	grid := strings.Join(cards, "\n")
+
+	return lipgloss.JoinVertical(lipgloss.Left, title, "", grid)
 }
 
 func (m *model) renderAdvancedConfigReview() string {
-	var b strings.Builder
-	b.WriteString(aimuxT.Title.Render("Advanced Model Configuration"))
-	b.WriteString("\n\n")
-	b.WriteString(fmt.Sprintf("  Registered models: %d\n\n", len(m.switchRegisteredModels)))
+	title := aimuxT.CardTitle.Render("Advanced Model Configuration")
+	subtitle := lipgloss.NewStyle().
+		Foreground(aimuxT.TextSecondary).
+		Render(fmt.Sprintf("Registered models · %d", len(m.switchRegisteredModels)))
 
+	var content string
 	if len(m.switchModelMetadataSummary) == 0 {
-		b.WriteString(aimuxT.ItemDesc.Render("  No advanced metadata available for these models."))
-		b.WriteString("\n")
-		b.WriteString(aimuxT.ItemDesc.Render("  Default settings will be used."))
-		b.WriteString("\n")
+		content = aimuxT.Muted.Render("No advanced metadata available — default settings will be used.")
 	} else {
-		for _, line := range m.switchModelMetadataSummary {
-			b.WriteString(aimuxT.ItemDesc.Render("  " + line))
-			b.WriteString("\n")
-		}
+		content = strings.Join(m.switchModelMetadataSummary, "\n")
 	}
 
-	b.WriteString("\n")
-	b.WriteString(aimuxT.Help.Render("Enter = Proceed to apply · Esc = Back to model selection"))
-	return b.String()
+	cardBody := lipgloss.JoinVertical(lipgloss.Left,
+		title,
+		subtitle,
+		"",
+		content,
+	)
+
+	return aimuxT.Card.Copy().Width(m.width - 8).Render(cardBody)
 }
 
 // buildMetadataSummary builds display lines for model metadata.
@@ -1877,6 +2303,23 @@ func buildMetadataSummary(registeredModels []string, providerID int64, useCases 
 	return lines
 }
 
+// parseContextWindowStr parses a user-supplied context window string (e.g. "1000000") into int64.
+// Empty string = 0 (not set). Non-numeric = 0.
+func parseContextWindowStr(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	v, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0
+	}
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
 // syncSwitchStep sets the stepper state based on the current switch view.
 func (m *model) syncSwitchStep() {
 	switch m.currentView {
@@ -1917,65 +2360,257 @@ func (m *model) syncSwitchStep() {
 }
 
 // renderSwitchStepper renders a compact step indicator for the Switch flow.
+// Delegates to the dedicated RenderStepIndicator component in stepper.go.
 func (m *model) renderSwitchStepper() string {
-	if m.switchTotalSteps == 0 {
-		return ""
-	}
-
-	dotDone := aimuxT.SelTitle.Render("●")
-	dotEmpty := aimuxT.Inactive.Render("○")
-	dotCurrent := lipgloss.NewStyle().
-		Foreground(aimuxT.AccentAlt).
-		Bold(true).
-		Render("◉")
-
-	var dots []string
-	for i := 1; i <= m.switchTotalSteps; i++ {
-		if i < m.switchStep {
-			dots = append(dots, dotDone)
-		} else if i == m.switchStep {
-			dots = append(dots, dotCurrent)
-		} else {
-			dots = append(dots, dotEmpty)
-		}
-	}
-	dotStr := strings.Join(dots, " ")
-
-	title := fmt.Sprintf("Step %d/%d: %s", m.switchStep, m.switchTotalSteps, m.switchStepLabel)
-	titleStr := aimuxT.Help.Render(title)
-
-	return lipgloss.JoinVertical(lipgloss.Left,
-		titleStr,
-		"  "+dotStr,
-	)
+	return RenderStepIndicator(m.switchStep, m.switchTotalSteps, m.switchStepLabel)
 }
 
 func (m *model) renderHelpOverlay() string {
-	return lipgloss.JoinVertical(lipgloss.Left,
-		aimuxT.Title.Render("Help & Shortcuts"),
-		"",
-		aimuxT.ItemDesc.Render("  ↑/↓ k/j  — Navigate list"),
-		aimuxT.ItemDesc.Render("  Enter    — Select / Confirm"),
-		aimuxT.ItemDesc.Render("  Esc      — Go back / Abort"),
-		aimuxT.ItemDesc.Render("  a        — Add provider"),
-		aimuxT.ItemDesc.Render("  d        — Delete / Remove"),
-		aimuxT.ItemDesc.Render("  e        — Edit models"),
-		aimuxT.ItemDesc.Render("  r        — Retry model fetch"),
-		aimuxT.ItemDesc.Render("  t        — Test connectivity"),
-		aimuxT.ItemDesc.Render("  ?        — Toggle this help"),
-		aimuxT.ItemDesc.Render("  q / Ctrl+C  — Quit"),
-		"",
-		aimuxT.Help.Render("Press any key to close"),
-	)
+	var b strings.Builder
+	b.WriteString(aimuxT.Title.Render("Help & Shortcuts"))
+	b.WriteString("\n\n")
+
+	shortcuts := []struct {
+		keys string
+		desc string
+	}{
+		{"↑/↓  k/j", "Navigate list"},
+		{"Enter", "Select / Confirm"},
+		{"Esc", "Go back / Abort"},
+		{"a", "Add provider"},
+		{"d", "Delete / Remove"},
+		{"e", "Edit models"},
+		{"r", "Retry model fetch"},
+		{"t", "Test connectivity"},
+		{"?", "Toggle this help"},
+		{"q  Ctrl+C", "Quit"},
+	}
+
+	keyStyle := lipgloss.NewStyle().Bold(true).Foreground(aimuxT.Accent).Padding(0, 1)
+	descStyle := lipgloss.NewStyle().Foreground(aimuxT.TextSecondary).Padding(0, 1)
+
+	for _, s := range shortcuts {
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Left,
+			keyStyle.Render(fmt.Sprintf(" %-14s", s.keys)),
+			descStyle.Render(s.desc),
+		))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(aimuxT.Help.Render("Press any key to close"))
+
+	return b.String()
 }
 
-func (m *model) isSingleSelectForm() bool {
-	return m.currentView == switchTargetCLIView ||
-		m.currentView == switchProviderView ||
-		m.currentView == switchMapModelsView ||
-		m.currentView == switchSelectModelsView ||
-		m.currentView == manageCLIView ||
-		m.currentView == deleteBindingConfirmView ||
-		m.currentView == restoreCLIView ||
-		m.currentView == restoreBackupView
+// generateCompactDiff builds a scrollable diff view comparing the current config
+// against the new env vars/model mappings.
+//
+// For env-var CLIs (Claude Code, Codex): keys like ANTHROPIC_API_KEY are matched
+// in the config file by substring, showing each matched line as removed (- red)
+// and the new assignment as added (+ green) with 3 context lines.
+//
+// For model-based CLIs (pi, OpenCode, Copilot): the _registered key lists models.
+// These are rendered as human-readable additions after a "▌ model changes" header.
+//
+// Large identical sections are collapsed into a dimmed placeholder line.
+func generateCompactDiff(currentConfig string, envVars map[string]string) string {
+	if len(envVars) == 0 {
+		return aimuxT.Muted.Render("  No changes to display.")
+	}
+
+	lines := strings.Split(strings.TrimRight(currentConfig, "\n"), "\n")
+	hasConfig := len(lines) > 0 && !(len(lines) == 1 && lines[0] == "")
+
+	// Separate meta keys (starting with _) from regular env var keys.
+	var metaKeys []string
+	var metaVals []string
+	var regularKeys []string
+	regularVals := make(map[string]string)
+	for k, v := range envVars {
+		if strings.HasPrefix(k, "_") {
+			metaKeys = append(metaKeys, k)
+			metaVals = append(metaVals, v)
+		} else {
+			regularKeys = append(regularKeys, k)
+			regularVals[k] = v
+		}
+	}
+
+	type change struct {
+		idx     int    // line index in config (-1 = pure addition)
+		oldLine string // matched config line (empty for pure addition)
+		newLine string // formatted as "KEY = value"
+		meta    bool   // true if this is a meta-key addition (shown after config preview)
+	}
+
+	var matchedChanges []change // changes found in config (regular keys that matched)
+	var unmatChanges []change   // regular keys NOT found in config
+	var metaChanges []change    // meta-key additions (shown last)
+
+	// Match regular env var keys against config lines
+	for _, key := range regularKeys {
+		newLine := fmt.Sprintf("%s = %s", key, regularVals[key])
+		found := false
+		if hasConfig {
+			for i, line := range lines {
+				if strings.Contains(line, key) {
+					matchedChanges = append(matchedChanges, change{idx: i, oldLine: line, newLine: newLine})
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			unmatChanges = append(unmatChanges, change{idx: -1, oldLine: "", newLine: newLine})
+		}
+	}
+
+	// Meta keys (_registered etc.) go last, after config preview
+	for i, key := range metaKeys {
+		if key == "_registered" {
+			models := strings.Split(metaVals[i], ",")
+			for _, m := range models {
+				m = strings.TrimSpace(m)
+				if m != "" {
+					metaChanges = append(metaChanges, change{idx: -1, oldLine: "", newLine: fmt.Sprintf("register model:  %s", m), meta: true})
+				}
+			}
+		} else {
+			metaChanges = append(metaChanges, change{idx: -1, oldLine: "", newLine: fmt.Sprintf("%s = %s", key, metaVals[i]), meta: true})
+		}
+	}
+
+	hasAnyChanges := len(matchedChanges) > 0 || len(unmatChanges) > 0 || len(metaChanges) > 0
+	if !hasAnyChanges {
+		return aimuxT.Muted.Render("  No changes detected.")
+	}
+
+	// Sort matched changes by line index
+	sort.Slice(matchedChanges, func(i, j int) bool {
+		return matchedChanges[i].idx < matchedChanges[j].idx
+	})
+
+	ctxBefore := 3
+	ctxAfter := 3
+	var sb strings.Builder
+
+	// ── Section 1: matched env-var changes in config ──
+	if len(matchedChanges) > 0 && hasConfig {
+		sb.WriteString(aimuxT.DiffHeader.Render("▌ current config"))
+		sb.WriteString("\n")
+
+		lastIdx := -2
+		for _, ch := range matchedChanges {
+			// Context before the change
+			gap := ch.idx - lastIdx - 1
+			if lastIdx >= 0 && gap > (ctxBefore+ctxAfter+1) {
+				sb.WriteString(aimuxT.DiffMuted.Render(fmt.Sprintf("  ... (%d líneas idénticas ocultas) ...", gap)))
+				sb.WriteString("\n")
+				start := ch.idx - ctxBefore
+				if start < 0 {
+					start = 0
+				}
+				for j := start; j < ch.idx; j++ {
+					sb.WriteString(aimuxT.DiffContext.Render(fmt.Sprintf("  %s", lines[j])))
+					sb.WriteString("\n")
+				}
+			} else if lastIdx >= 0 && gap > 0 {
+				for j := lastIdx + 1; j < ch.idx; j++ {
+					sb.WriteString(aimuxT.DiffContext.Render(fmt.Sprintf("  %s", lines[j])))
+					sb.WriteString("\n")
+				}
+			} else if lastIdx < 0 && ch.idx > ctxBefore {
+				sb.WriteString(aimuxT.DiffMuted.Render(fmt.Sprintf("  ... (%d líneas idénticas ocultas) ...", ch.idx-ctxBefore)))
+				sb.WriteString("\n")
+				start := ch.idx - ctxBefore
+				for j := start; j < ch.idx; j++ {
+					sb.WriteString(aimuxT.DiffContext.Render(fmt.Sprintf("  %s", lines[j])))
+					sb.WriteString("\n")
+				}
+			} else if lastIdx < 0 && ch.idx > 0 {
+				for j := 0; j < ch.idx; j++ {
+					sb.WriteString(aimuxT.DiffContext.Render(fmt.Sprintf("  %s", lines[j])))
+					sb.WriteString("\n")
+				}
+			}
+
+			// The change itself
+			if ch.oldLine != "" {
+				sb.WriteString(aimuxT.DiffRemoved.Render(fmt.Sprintf("- %s", ch.oldLine)))
+				sb.WriteString("\n")
+			}
+			sb.WriteString(aimuxT.DiffAdded.Render(fmt.Sprintf("+ %s", ch.newLine)))
+			sb.WriteString("\n")
+
+			// Context after the change
+			end := ch.idx + ctxAfter
+			if end >= len(lines) {
+				end = len(lines) - 1
+			}
+			for j := ch.idx + 1; j <= end; j++ {
+				sb.WriteString(aimuxT.DiffContext.Render(fmt.Sprintf("  %s", lines[j])))
+				sb.WriteString("\n")
+			}
+			lastIdx = end
+		}
+
+		// Trailing collapsed content after last change
+		if lastIdx >= 0 && lastIdx < len(lines)-1 {
+			trailGap := len(lines) - 1 - lastIdx
+			if trailGap > ctxAfter+1 {
+				sb.WriteString(aimuxT.DiffMuted.Render(fmt.Sprintf("  ... (%d líneas idénticas ocultas) ...", trailGap)))
+				sb.WriteString("\n")
+			} else {
+				for j := lastIdx + 1; j < len(lines); j++ {
+					sb.WriteString(aimuxT.DiffContext.Render(fmt.Sprintf("  %s", lines[j])))
+					sb.WriteString("\n")
+				}
+			}
+		}
+	}
+
+	// ── Section 2: config preview when no regular keys matched ──
+	// This happens for model-based CLIs where only meta keys exist.
+	// Every line is shown — the viewport handles scrolling for large files.
+	noMatchedChanges := len(matchedChanges) == 0 && len(unmatChanges) == 0
+	if hasConfig && noMatchedChanges && len(metaChanges) > 0 {
+		sb.WriteString(aimuxT.DiffHeader.Render("▌ current config"))
+		sb.WriteString("\n")
+		for _, line := range lines {
+			sb.WriteString(aimuxT.DiffContext.Render(fmt.Sprintf("  %s", line)))
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	// ── Section 3: unmatched regular keys (env vars not found in config) ──
+	if len(unmatChanges) > 0 {
+		if sb.Len() > 0 {
+			sb.WriteString("\n")
+		}
+		for _, ch := range unmatChanges {
+			sb.WriteString(aimuxT.DiffAdded.Render(fmt.Sprintf("+ %s", ch.newLine)))
+			sb.WriteString("\n")
+		}
+	}
+
+	// ── Section 4: meta-key additions (model registrations, always last) ──
+	if len(metaChanges) > 0 {
+		if sb.Len() > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(aimuxT.DiffHeader.Render("▌ model changes"))
+		sb.WriteString("\n")
+		for _, ch := range metaChanges {
+			sb.WriteString(aimuxT.DiffAdded.Render(fmt.Sprintf("+ %s", ch.newLine)))
+			sb.WriteString("\n")
+		}
+	}
+
+	result := sb.String()
+	if result == "" {
+		return aimuxT.DiffMuted.Render("  (no visible changes)")
+	}
+	return result
 }

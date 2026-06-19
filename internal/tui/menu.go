@@ -15,69 +15,90 @@ const (
 	menuItemCount           = 5
 )
 
-var (
-	menuSelectedStyle = lipgloss.NewStyle().
-				Foreground(aimuxT.TextPrimary).
-				Background(aimuxT.BgSelected).
-				Padding(0, 2).
-				Bold(true).
-				BorderStyle(lipgloss.NormalBorder()).
-				BorderLeft(true).
-				BorderForeground(aimuxT.Accent)
-
-	menuNormalStyle = lipgloss.NewStyle().
-			Foreground(aimuxT.TextSecondary).
-			Padding(0, 2)
-
-	menuInactiveStyle = lipgloss.NewStyle().
-				Foreground(aimuxT.TextDim).
-				Padding(0, 2).
-				Italic(true).
-				BorderStyle(lipgloss.NormalBorder()).
-				BorderLeft(true).
-				BorderForeground(lipgloss.Color(""))
-
-	helpStyle = lipgloss.NewStyle().
-			Foreground(aimuxT.TextDim).
-			Padding(0, 1).
-			Italic(true)
-)
-
 // MenuItemCount returns the number of menu items.
 func MenuItemCount() int {
 	return menuItemCount
 }
 
 // RenderMenu renders the action menu with the given selected index.
+// Wraps items in a lipgloss card with NativeBorder for a clean, modern look.
 func RenderMenu(selectedIndex int, hasProviders bool) string {
-	var b strings.Builder
-
 	items := []struct {
 		label   string
+		desc    string
 		enabled bool
 	}{
-		{"Switch", hasProviders},
-		{"Manage Providers", true},
-		{"Manage CLIs", true},
-		{"Restore Backup", true},
-		{"Exit", true},
+		{"Switch", "Activate a provider for a CLI", hasProviders},
+		{"Manage Providers", "Add, edit, or remove providers", true},
+		{"Manage CLIs", "Configure target CLI paths", true},
+		{"Restore Backup", "Revert to a previous config", true},
+		{"Exit", "Quit aimux", true},
 	}
 
-	var rendered []string
+	var lines []string
 	for i, item := range items {
+		selected := i == selectedIndex
+
 		if !item.enabled {
-			rendered = append(rendered, menuInactiveStyle.Render(item.label))
-		} else if i == selectedIndex {
-			rendered = append(rendered, menuSelectedStyle.Render(" "+item.label))
+			// Disabled item: dimmed, italic
+			line := lipgloss.NewStyle().
+				Foreground(aimuxT.TextMuted).
+				Italic(true).
+				Padding(0, 2).
+				Render("  " + item.label)
+			lines = append(lines, line)
+		} else if selected {
+			// Selected: pink accent bar + bold text on pink bg + description
+			indicator := lipgloss.NewStyle().
+				Foreground(aimuxT.Accent).
+				Bold(true).
+				Blink(true).
+				Render("▸ ")
+			label := lipgloss.NewStyle().
+				Foreground(aimuxT.TextPrimary).
+				Background(aimuxT.Accent).
+				Bold(true).
+				Render(item.label)
+			desc := lipgloss.NewStyle().
+				Foreground(aimuxT.TextSecondary).
+				Render("  " + item.desc)
+			line := lipgloss.NewStyle().
+				Padding(0, 2).
+				Render(indicator + label + desc)
+			lines = append(lines, line)
 		} else {
-			rendered = append(rendered, "  "+menuNormalStyle.Render(item.label))
+			// Normal: muted text
+			line := lipgloss.NewStyle().
+				Foreground(aimuxT.TextSecondary).
+				Padding(0, 2).
+				Render("  " + item.label)
+			lines = append(lines, line)
 		}
 	}
 
-	b.WriteString("  ")
-	b.WriteString(strings.Join(rendered, "\n  "))
-	b.WriteString("\n\n  ")
-	b.WriteString(helpStyle.Render("↑/↓ k/j · Enter · q quit"))
+	// Wrap in card with section title
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(aimuxT.Accent).
+		Padding(0, 1).
+		Render("Actions")
 
-	return b.String()
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		append([]string{title, " "}, lines...)...,
+	)
+
+	return aimuxT.Card.Copy().Width(60).Render(content)
+}
+
+// renderFooterActions renders the unified keybinding bar with key • desc format.
+// Keys in AccentPurple (bold), descriptions in muted gray, separated by " • ".
+func renderFooterActions(bindings []struct{ key, desc string }) string {
+	var parts []string
+	for _, b := range bindings {
+		part := aimuxT.FooterKey.Render(b.key) +
+			aimuxT.FooterSep.Render(" • ") +
+			aimuxT.FooterDesc.Render(b.desc)
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, "  ")
 }

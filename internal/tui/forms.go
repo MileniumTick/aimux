@@ -12,24 +12,20 @@ import (
 
 // AddProviderResult holds the values submitted from the Add Provider form.
 type AddProviderResult struct {
-	Name         string
-	BaseURL      string
-	DiscoveryURL string // optional, for model discovery
-	APIKey       string
-	AuthToken    string
-	ApiType      string
+	Name                    string
+	BaseURL                 string
+	DiscoveryURL            string // optional, for model discovery
+	DefaultContextWindowStr string // raw input, parsed after form completion
+	DefaultContextWindow    int64  // parsed value
+	APIKey                  string
+	AuthToken               string
 }
 
 // NewAddProviderForm creates a form for adding a new provider.
+// Split into 3 paginated groups (A4): Identity, Endpoint, Credentials.
 func NewAddProviderForm(result *AddProviderResult) *huh.Form {
-	apiTypeOpts := []huh.Option[string]{
-		huh.NewOption("OpenAI / OpenAI-compatible", "openai"),
-		huh.NewOption("Anthropic", "anthropic"),
-		huh.NewOption("Google AI (Gemini)", "google"),
-	}
-	result.ApiType = "openai"
-
 	return huh.NewForm(
+		// Group 1: Identity
 		huh.NewGroup(
 			huh.NewInput().
 				Title("Name").
@@ -41,6 +37,10 @@ func NewAddProviderForm(result *AddProviderResult) *huh.Form {
 					}
 					return nil
 				}),
+		).Title("Identity"),
+
+		// Group 2: Endpoint
+		huh.NewGroup(
 			huh.NewInput().
 				Title("Base URL").
 				Placeholder("https://api.openai.com/v1").
@@ -55,6 +55,15 @@ func NewAddProviderForm(result *AddProviderResult) *huh.Form {
 					}
 					return nil
 				}),
+			huh.NewInput().
+				Title("Discovery URL (optional)").
+				Description("Separate URL for model discovery. Leave empty to use Base URL.").
+				Placeholder("https://api.bifrost.local/v1").
+				Value(&result.DiscoveryURL),
+		).Title("Endpoint"),
+
+		// Group 3: Credentials
+		huh.NewGroup(
 			huh.NewInput().
 				Title("API Key").
 				Value(&result.APIKey).
@@ -71,17 +80,12 @@ func NewAddProviderForm(result *AddProviderResult) *huh.Form {
 				Value(&result.AuthToken).
 				EchoMode(huh.EchoModePassword),
 			huh.NewInput().
-				Title("Discovery URL (optional)").
-				Description("Separate URL for model discovery. Leave empty to use Base URL.").
-				Placeholder("https://api.bifrost.local/v1").
-				Value(&result.DiscoveryURL),
-			huh.NewSelect[string]().
-				Title("API Type").
-				Description("Model discovery method").
-				Options(apiTypeOpts...).
-				Value(&result.ApiType),
-		),
-	).WithHeight(11)
+				Title("Default Context Window").
+				Description("Fallback for models without metadata. 0 = not set.").
+				Placeholder("1000000").
+				Value(&result.DefaultContextWindowStr),
+		).Title("Credentials"),
+	).WithTheme(HuhTheme())
 }
 
 // NewDeleteConfirmForm creates a confirmation dialog for deleting a provider.
@@ -95,7 +99,7 @@ func NewDeleteConfirmForm(name string, result *bool) *huh.Form {
 				Negative("No").
 				Value(result),
 		),
-	)
+	).WithTheme(HuhTheme())
 }
 
 // NewSelectTargetCLIForm creates a form to select a target CLI.
@@ -112,7 +116,7 @@ func NewSelectTargetCLIForm(clis []domain.TargetCLI, result *int64) *huh.Form {
 				Options(opts...).
 				Value(result),
 		),
-	)
+	).WithTheme(HuhTheme())
 }
 
 // NewSelectProviderForm creates a form to select a provider.
@@ -143,7 +147,7 @@ func newSelectProviderForm(title string, providers []domain.Provider, result *in
 				Options(opts...).
 				Value(result),
 		),
-	)
+	).WithTheme(HuhTheme())
 }
 
 // MapModelsResult holds the result of the model mapping form.
@@ -180,7 +184,7 @@ func NewRegisterModelsForm(models []domain.ProviderModel, preSelected map[string
 				Options(opts...).
 				Value(&result.RegisteredModels),
 		),
-	).WithHeight(10)
+	).WithTheme(HuhTheme())
 }
 
 // NewSelectModelsForm creates a multi-select to pick models for a CLI.
@@ -218,7 +222,7 @@ func NewSelectSingleModelForm(models []domain.ProviderModel, result *SelectSingl
 				Options(opts...).
 				Value(&result.ModelName),
 		),
-	).WithHeight(10)
+	).WithTheme(HuhTheme())
 }
 
 // EditModelsResult holds the result from the edit-models form.
@@ -263,7 +267,7 @@ func NewEditModelsForm(models []domain.ProviderModel, currentModels []string, re
 				Placeholder("e.g. my-custom-model,other-model").
 				Value(&result.CustomModels),
 		),
-	)
+	).WithTheme(HuhTheme())
 }
 
 // EditCLIPathResult holds the values from the Edit CLI Path form.
@@ -300,7 +304,7 @@ func NewSelectCLIForm(clis []domain.TargetCLI, result *int64) *huh.Form {
 				Options(opts...).
 				Value(result),
 		),
-	)
+	).WithTheme(HuhTheme())
 }
 
 // NewEditCLIPathForm creates a form to edit a CLI's config path.
@@ -321,7 +325,7 @@ func NewEditCLIPathForm(cli *domain.TargetCLI, result *EditCLIPathResult) *huh.F
 						"To change which profile file is used, edit your $SHELL environment variable.\n" +
 						"To remove the env vars, unbind the provider in the Switch flow."),
 			),
-		)
+		).WithTheme(HuhTheme())
 	}
 
 	return huh.NewForm(
@@ -337,7 +341,7 @@ func NewEditCLIPathForm(cli *domain.TargetCLI, result *EditCLIPathResult) *huh.F
 					return nil
 				}),
 		),
-	)
+	).WithTheme(HuhTheme())
 }
 
 // NewMapModelsForm creates a dynamic form with one Select per env var.
@@ -405,38 +409,45 @@ func NewMapModelsForm(envVars []string, models []domain.ProviderModel) (*huh.For
 		return result
 	}
 
-	return huh.NewForm(groups...), extract
+	form := huh.NewForm(groups...)
+	return form.WithTheme(HuhTheme()), extract
 }
 
 // EditProviderResult holds the values submitted from the Edit Provider form.
 type EditProviderResult struct {
-	Name         string
-	BaseURL      string
-	DiscoveryURL string // optional, for model discovery
-	APIKey       string
-	AuthToken    string
-	ApiType      string
+	Name                    string
+	BaseURL                 string
+	DiscoveryURL            string // optional, for model discovery
+	DefaultContextWindowStr string // raw input, parsed after form completion
+	DefaultContextWindow    int64  // pre-filled value
+	APIKey                  string
+	AuthToken               string
 }
 
 // NewEditProviderForm creates a pre-filled form for editing an existing provider.
+// Split into 3 paginated groups (A4): Identity (note), Endpoint, Credentials.
 func NewEditProviderForm(provider domain.Provider, result *EditProviderResult) *huh.Form {
-	apiTypeOpts := []huh.Option[string]{
-		huh.NewOption("OpenAI / OpenAI-compatible", "openai"),
-		huh.NewOption("Anthropic", "anthropic"),
-		huh.NewOption("Google AI (Gemini)", "google"),
-	}
 	result.Name = provider.Name
 	result.BaseURL = provider.BaseURL
 	result.DiscoveryURL = provider.DiscoveryURL
+	result.DefaultContextWindow = provider.DefaultContextWindow
+	result.DefaultContextWindowStr = ""
+	if provider.DefaultContextWindow > 0 {
+		result.DefaultContextWindowStr = fmt.Sprintf("%d", provider.DefaultContextWindow)
+	}
 	result.APIKey = provider.APIKey
 	result.AuthToken = provider.AuthToken
-	result.ApiType = string(provider.ApiType)
 
 	return huh.NewForm(
+		// Group 1: Identity (read-only note)
 		huh.NewGroup(
 			huh.NewNote().
 				Title("Editing: "+provider.Name).
 				Description("Name is read-only. Update fields below."),
+		).Title("Identity"),
+
+		// Group 2: Endpoint
+		huh.NewGroup(
 			huh.NewInput().
 				Title("Base URL").
 				Placeholder("https://api.openai.com/v1").
@@ -451,6 +462,15 @@ func NewEditProviderForm(provider domain.Provider, result *EditProviderResult) *
 					}
 					return nil
 				}),
+			huh.NewInput().
+				Title("Discovery URL (optional)").
+				Description("Separate URL for model discovery. Leave empty to use Base URL.").
+				Placeholder("https://api.bifrost.local/v1").
+				Value(&result.DiscoveryURL),
+		).Title("Endpoint"),
+
+		// Group 3: Credentials
+		huh.NewGroup(
 			huh.NewInput().
 				Title("API Key").
 				Value(&result.APIKey).
@@ -467,17 +487,12 @@ func NewEditProviderForm(provider domain.Provider, result *EditProviderResult) *
 				Value(&result.AuthToken).
 				EchoMode(huh.EchoModePassword),
 			huh.NewInput().
-				Title("Discovery URL (optional)").
-				Description("Separate URL for model discovery. Leave empty to use Base URL.").
-				Placeholder("https://api.bifrost.local/v1").
-				Value(&result.DiscoveryURL),
-			huh.NewSelect[string]().
-				Title("API Type").
-				Description("Model discovery method").
-				Options(apiTypeOpts...).
-				Value(&result.ApiType),
-		),
-	).WithHeight(11)
+				Title("Default Context Window").
+				Description("Fallback for models without metadata. 0 = not set.").
+				Placeholder("1000000").
+				Value(&result.DefaultContextWindowStr),
+		).Title("Credentials"),
+	).WithTheme(HuhTheme())
 }
 
 // NewRestoreBackupForm creates a form to select a backup to restore.
@@ -495,5 +510,5 @@ func NewRestoreBackupForm(backups []application.BackupOption, result *string) *h
 				Options(opts...).
 				Value(result),
 		),
-	)
+	).WithTheme(HuhTheme())
 }

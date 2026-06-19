@@ -19,7 +19,7 @@ import (
 
 // version is the aimux binary version. Override at build time with
 // -ldflags "-X main.version=x.y.z". Defaults to a dev marker.
-var version = "0.2.0"
+var version = "dev"
 
 func main() {
 	closeLog, err := application.SetupLogFile()
@@ -109,7 +109,7 @@ func setupDB() (db *sql.DB, cleanup func(), err error) {
 }
 
 func runTUI(providerUseCases *application.ProviderUseCases, switchUseCases *application.SwitchUseCases) {
-	model := tui.NewModel(providerUseCases, switchUseCases)
+	model := tui.NewModel(providerUseCases, switchUseCases, version)
 	program := tea.NewProgram(model, tea.WithAltScreen())
 	if _, err := program.Run(); err != nil {
 		log.Fatalf("Error running program: %v", err)
