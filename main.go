@@ -46,7 +46,7 @@ func main() {
 		"claude-settings-json":   &mutators.ClaudeSettingsJSON{},
 		"opencode-provider-json": &mutators.OpenCodeProviderJSON{},
 		"codex-config-toml":      &mutators.CodexConfigTOML{},
-		"copilot-env-file":       &mutators.CopilotEnvFile{},
+		"copilot-shell-profile":  &mutators.CopilotShellProfile{},
 		"pi-dual-json":           &mutators.PiDualJSON{},
 	}
 
@@ -95,6 +95,7 @@ func setupDB() (db *sql.DB, cleanup func(), err error) {
 		sqlite2.MigrationAddDiscoveryURLColumn,
 		sqlite2.MigrationMultiProvider,
 		sqlite2.MigrationRemoveOpenCodeNpm,
+		sqlite2.MigrationCopilotShellProfile,
 		sqlite2.CreateIndexes,
 		sqlite2.SeedTargetCLIs,
 	} {
@@ -163,7 +164,15 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 			if len(clis) > 0 {
 				fmt.Println("\nAvailable CLIs:")
 				for _, c := range clis {
-					fmt.Printf("  %s  (%s)\n", c.Name, c.ConfigPath)
+					path := c.ConfigPath
+					if path == "" {
+						if c.Mutator == "copilot-shell-profile" {
+							path = "shell profile"
+						} else {
+							path = "auto-detect"
+						}
+					}
+					fmt.Printf("  %s  (%s)\n", c.Name, path)
 				}
 			}
 			return

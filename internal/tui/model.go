@@ -172,8 +172,8 @@ type model struct {
 	selectedCLIID     int64
 	editCLIPathResult EditCLIPathResult
 
-	showHelp    bool   // when true, render help overlay instead of current view
-	exitConfirm bool   // true when waiting for second q to confirm quit
+	showHelp bool // when true, render help overlay instead of current view
+
 	lastUndoCLI string // CLI name for quick undo (Z key), empty = nothing to undo
 
 	spinner    spinner.Model
@@ -410,17 +410,6 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Dismiss persistent notification on any key press
 	if m.notification != "" && !m.notificationIsMsg {
 		m.notification = ""
-		m.exitConfirm = false
-	}
-
-	// Exit confirm: any non-q key resets
-	if m.exitConfirm {
-		if key.Matches(msg, menuKeys.Quit) {
-			return m, tea.Quit
-		}
-		m.exitConfirm = false
-		m.notification = ""
-		// Fall through to normal handling
 	}
 
 	switch m.currentView {
@@ -443,13 +432,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, menuKeys.Enter):
 			return m.handleMenuSelection()
 		case key.Matches(msg, menuKeys.Quit):
-			if m.exitConfirm {
-				return m, tea.Quit
-			}
-			m.exitConfirm = true
-			m.notification = "Press q again to quit, or any other key to cancel"
-			m.notificationIsMsg = false
-			return m, nil
+			return m, tea.Quit
 		}
 
 	case providerListView:

@@ -244,11 +244,24 @@ type EditCLIPathResult struct {
 	ConfigPath string
 }
 
+// cliConfigLabel returns a human-readable config path label for a CLI.
+// For CLIs without a static config path (e.g. copilot-shell-profile), shows
+// "shell profile" instead of an empty path.
+func cliConfigLabel(c domain.TargetCLI) string {
+	if c.Mutator == "copilot-shell-profile" {
+		return "shell profile"
+	}
+	if c.ConfigPath == "" {
+		return "auto-detect"
+	}
+	return c.ConfigPath
+}
+
 // NewSelectCLIForm creates a form to select a CLI for management.
 func NewSelectCLIForm(clis []domain.TargetCLI, result *int64) *huh.Form {
 	opts := make([]huh.Option[int64], len(clis))
 	for i, c := range clis {
-		label := c.Name + "  (" + c.ConfigPath + ")"
+		label := c.Name + "  (" + cliConfigLabel(c) + ")"
 		opts[i] = huh.NewOption(label, c.ID)
 	}
 	return huh.NewForm(
@@ -263,9 +276,26 @@ func NewSelectCLIForm(clis []domain.TargetCLI, result *int64) *huh.Form {
 }
 
 // NewEditCLIPathForm creates a form to edit a CLI's config path.
+// For CLIs with auto-detected paths (copilot-shell-profile), shows a note
+// and returns without editing.
 func NewEditCLIPathForm(cli *domain.TargetCLI, result *EditCLIPathResult) *huh.Form {
 	result.CLIID = cli.ID
 	result.ConfigPath = cli.ConfigPath
+
+	if cli.Mutator == "copilot-shell-profile" {
+		// copilot uses auto-detected shell profile — no config path to edit
+		return huh.NewForm(
+			huh.NewGroup(
+				huh.NewNote().
+					Title("Config Path for " + cli.Name).
+					Description("No config path needed — COPILOT_PROVIDER_* env vars are written to your shell profile (" +
+						"auto-detected from $SHELL).\n\n" +
+						"To change which profile file is used, edit your $SHELL environment variable.\n" +
+						"To remove the env vars, unbind the provider in the Switch flow."),
+			),
+		)
+	}
+
 	return huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().

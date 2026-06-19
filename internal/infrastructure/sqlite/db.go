@@ -248,6 +248,16 @@ func MigrationMultiProvider(db *sql.DB) error {
 	return tx.Commit()
 }
 
+// MigrationCopilotShellProfile updates the github-copilot target CLI row to use
+// the new shell-profile mutator instead of the deprecated copilot-env-file.
+func MigrationCopilotShellProfile(db *sql.DB) error {
+	_, err := db.Exec(`UPDATE target_clis SET mutator = 'copilot-shell-profile', config_path = '' WHERE name = 'github-copilot' AND mutator = 'copilot-env-file'`)
+	if err != nil {
+		return fmt.Errorf("migrate copilot to shell profile: %w", err)
+	}
+	return nil
+}
+
 // CreateIndexes creates indexes if they do not exist.
 func CreateIndexes(db *sql.DB) error {
 	statements := []string{
@@ -293,9 +303,9 @@ func SeedTargetCLIs(db *sql.DB) error {
 		},
 		{
 			"github-copilot",
-			"~/.config/copilot/.env",
+			"", // shell profile auto-detected at runtime — no config path
 			`["COPILOT_MODEL"]`,
-			"copilot-env-file",
+			"copilot-shell-profile",
 			"{}",
 		},
 		{

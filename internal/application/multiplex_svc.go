@@ -7,6 +7,7 @@ import (
 
 	"github.com/MileniumTick/aimux/internal/domain"
 	"github.com/MileniumTick/aimux/internal/infrastructure/config"
+	"github.com/MileniumTick/aimux/internal/infrastructure/mutators"
 )
 
 // SwitchUseCases handles profile switching and config mutation business logic.
@@ -200,9 +201,20 @@ func (uc *SwitchUseCases) DryRun(targetCLIID, providerID int64) (*DryRunResult, 
 		}
 	}
 
-	resolvedPath, err := ResolveTargetConfigPath(cli.ConfigPath)
-	if err != nil {
-		return nil, fmt.Errorf("resolve config path: %w", err)
+	// For CLIs with auto-detected paths (copilot-shell-profile), show the
+	// detected shell profile path instead of an empty config path.
+	resolvedPath := cli.ConfigPath
+	if resolvedPath == "" {
+		resolvedPath = mutators.ShellProfilePath()
+		if resolvedPath == "" {
+			resolvedPath = "(shell profile — auto-detected)"
+		}
+	} else {
+		var rErr error
+		resolvedPath, rErr = ResolveTargetConfigPath(cli.ConfigPath)
+		if rErr != nil {
+			return nil, fmt.Errorf("resolve config path: %w", rErr)
+		}
 	}
 
 	return &DryRunResult{
@@ -341,7 +353,8 @@ func (uc *SwitchUseCases) RemoveBinding(targetCLIID, providerID int64) error {
 }
 
 // ClearCLIConfig removes all custom provider entries from the config file
-// without wiping other settings. Only affects pi/OpenCode — env-based CLIs skip.
+// without wiping other settings. For copilot-shell-profile, removes the
+// managed env var block from the user's shell profile.
 func (uc *SwitchUseCases) ClearCLIConfig(targetCLIID int64) error {
 	cli, err := uc.cliRepo.Get(targetCLIID)
 	if err != nil {
@@ -364,6 +377,12 @@ func (uc *SwitchUseCases) ClearCLIConfig(targetCLIID int64) error {
 		root["providers"] = map[string]any{}
 	case "opencode-provider-json":
 		root["provider"] = map[string]any{}
+	case "copilot-shell-profile":
+		// Remove the aimux-managed block from the user's shell profile
+		if err := mutators.RemoveShellEnvBlock(); err != nil {
+			return fmt.Errorf("remove shell env block: %w", err)
+		}
+		return nil
 	default:
 		return nil
 	}
