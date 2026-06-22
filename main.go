@@ -258,7 +258,7 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 
 	case "version":
 		fmt.Printf("aimux %s\n", version)
-		info := update.CheckForUpdate(version, db, &http.Client{Timeout: 5 * time.Second})
+		info := update.CheckForUpdate(version, &http.Client{Timeout: 5 * time.Second})
 		if info.HasUpdate {
 			fmt.Printf("Update available: v%s → v%s\n", version, info.LatestVersion)
 		}
@@ -276,22 +276,6 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
-
-	case "daemon":
-		fmt.Println("Starting aimux daemon...")
-		socketPath, err := daemon.StartDaemon(db)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Printf("Daemon stopped. Socket: %s\n", socketPath)
-
-	case "daemon-stop":
-		if err := daemon.StopDaemon(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("Daemon stopped.")
 
 	case "run":
 		if len(args) < 2 {
@@ -326,15 +310,11 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 			os.Exit(1)
 		}
 
-		// Try daemon first, fall back to direct DB
-		result, err := daemon.ResolveViaDaemon(cliName)
+		// Resolve env vars via direct DB
+		result, err := daemon.ResolveViaDB(db, cliName)
 		if err != nil {
-			log.Printf("daemon not reachable, falling back to direct DB: %v", err)
-			result, err = daemon.ResolveViaDB(db, cliName)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
 		}
 
 		log.Printf("exec %s → %s: %d env vars", cliName, result.ProviderName, len(result.Env))

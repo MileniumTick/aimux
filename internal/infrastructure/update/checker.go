@@ -2,7 +2,6 @@ package update
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -22,21 +21,14 @@ type releaseAsset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
-// CheckForUpdate performs a cached version check against GitHub Releases.
+// CheckForUpdate checks GitHub Releases for a newer version.
 // Never blocks startup: errors are swallowed, returns zero-value UpdateInfo
 // with HasUpdate=false on any failure.
-func CheckForUpdate(currentVersion string, db *sql.DB, httpClient *http.Client) UpdateInfo {
+func CheckForUpdate(currentVersion string, httpClient *http.Client) UpdateInfo {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
 
-	// Step 1: try cache
-	cached, err := CacheGet(db, CacheKeyLatestVersion)
-	if err == nil && cached != "" {
-		return compareVersions(currentVersion, cached)
-	}
-
-	// Step 2: cache miss — fetch from GitHub API
 	release, err := fetchLatestRelease(httpClient, currentVersion)
 	if err != nil {
 		return UpdateInfo{CurrentVersion: currentVersion, HasUpdate: false}
@@ -46,9 +38,6 @@ func CheckForUpdate(currentVersion string, db *sql.DB, httpClient *http.Client) 
 	if len(latestVersion) > 0 && latestVersion[0] == 'v' {
 		latestVersion = latestVersion[1:]
 	}
-
-	// Cache the result (best-effort)
-	_ = CacheSet(db, CacheKeyLatestVersion, latestVersion)
 
 	return compareVersions(currentVersion, latestVersion)
 }

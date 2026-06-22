@@ -1,19 +1,14 @@
 package daemon
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/MileniumTick/aimux/internal/application"
 	"github.com/MileniumTick/aimux/internal/domain"
@@ -21,231 +16,6 @@ import (
 	"github.com/MileniumTick/aimux/internal/infrastructure/mutators"
 	"github.com/MileniumTick/aimux/internal/infrastructure/sqlite"
 )
-
-const socketName = "aimuxd.sock"
-
-// Server is the aimux daemon that resolves credentials via a Unix socket.
-type Server struct {
-	db         *sql.DB
-	socketPath string
-	server     *http.Server
-	mux        *http.ServeMux
-
-	providerRepo  *sqlite.ProviderRepository
-	cliRepo       *sqlite.TargetCLIRepository
-	multiplexRepo *sqlite.MultiplexRepository
-}
-
-// StartDaemon opens the DB, starts the Unix socket listener, and blocks until
-// SIGINT/SIGTERM or Stop is called. Returns the socket path on success.
-func StartDaemon(db *sql.DB) (string, error) {
-	socketPath, err := daemonSocketPath()
-	if err != nil {
-		return "", fmt.Errorf("resolve daemon socket path: %w", err)
-	}
-
-	// Remove stale socket file
-	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-		return "", fmt.Errorf("remove stale socket: %w", err)
-	}
-
-	srv := &Server{
-		db:            db,
-		socketPath:    socketPath,
-		providerRepo:  &sqlite.ProviderRepository{DB: db},
-		cliRepo:       &sqlite.TargetCLIRepository{DB: db},
-		multiplexRepo: &sqlite.MultiplexRepository{DB: db},
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/resolve/", srv.handleResolve)
-	mux.HandleFunc("/v1/health", srv.handleHealth)
-	mux.HandleFunc("/v1/stop", srv.handleStop)
-	srv.mux = mux
-
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		return "", fmt.Errorf("listen on unix socket: %w", err)
-	}
-	// Secure the socket — only owner can connect
-	os.Chmod(socketPath, 0600)
-
-	srv.server = &http.Server{
-		Handler: mux,
-	}
-
-	// Graceful shutdown on signal
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		log.Println("aimuxd: shutting down...")
-		srv.server.Close()
-	}()
-
-	log.Printf("aimuxd: listening on %s", socketPath)
-	if err := srv.server.Serve(listener); err != nil && err != http.ErrServerClosed {
-		return "", fmt.Errorf("serve: %w", err)
-	}
-
-	return socketPath, nil
-}
-
-// handleResolve resolves env vars for the CLI named in the URL path.
-// GET /v1/resolve/<cli-name>
-func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	cliName := strings.TrimPrefix(r.URL.Path, "/v1/resolve/")
-	cliName = strings.TrimSpace(cliName)
-	if cliName == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cli name required"})
-		return
-	}
-
-	result, err := s.resolve(cliName)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
-		return
-	}
-
-	writeJSON(w, http.StatusOK, result)
-}
-
-// handleHealth returns a simple health check.
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-// handleStop triggers a graceful shutdown.
-func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "stopping"})
-	go func() {
-		s.server.Close()
-	}()
-}
-
-// resolve looks up the CLI, its active binding, and resolves all env vars.
-func (s *Server) resolve(cliName string) (*ResolveResult, error) {
-	// Find CLI
-	clis, err := s.cliRepo.List()
-	if err != nil {
-		return nil, fmt.Errorf("list CLIs: %w", err)
-	}
-	var cli *domain.TargetCLI
-	for i := range clis {
-		if strings.EqualFold(clis[i].Name, cliName) {
-			cli = &clis[i]
-			break
-		}
-	}
-	if cli == nil {
-		return nil, fmt.Errorf("CLI '%s' not found", cliName)
-	}
-
-	// Get active bindings
-	bindings, err := s.multiplexRepo.ListForCLI(cli.ID)
-	if err != nil {
-		return nil, fmt.Errorf("list bindings: %w", err)
-	}
-	if len(bindings) == 0 {
-		return nil, fmt.Errorf("no active binding for '%s'. Use the TUI to set one up first", cliName)
-	}
-
-	// Use the first binding
-	binding := bindings[0]
-
-	// Get provider
-	provider, err := s.providerRepo.Get(binding.ProviderID)
-	if err != nil {
-		return nil, fmt.Errorf("get provider: %w", err)
-	}
-
-	// Parse model mappings
-	mappings := make(map[string]string)
-	if err := json.Unmarshal([]byte(binding.ModelMappings), &mappings); err != nil {
-		return nil, fmt.Errorf("parse model mappings: %w", err)
-	}
-
-	// Parse mutator config for extra_env
-	mutatorCfg := make(map[string]any)
-	if cli.MutatorConfig != "" && cli.MutatorConfig != "{}" {
-		if err := json.Unmarshal([]byte(cli.MutatorConfig), &mutatorCfg); err != nil {
-			return nil, fmt.Errorf("parse mutator config: %w", err)
-		}
-	}
-
-	// Parse env var names from cli.EnvVars and inject into mutatorCfg
-	var envVarNames []string
-	if cli.EnvVars != "" {
-		json.Unmarshal([]byte(cli.EnvVars), &envVarNames)
-	}
-	mutatorCfg["_env_var_names"] = envVarNames
-	mutatorCfg["_mutator_name"] = cli.Mutator
-
-	return resolveEnvVars(cliName, provider, mappings, mutatorCfg)
-}
-
-// daemonSocketPath returns the absolute path to the daemon Unix socket.
-func daemonSocketPath() (string, error) {
-	configDir, err := application.ResolveConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(configDir, socketName), nil
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
-// ── Client (aimux exec) ──────────────────────────────────────────────────────
-
-// ResolveViaDaemon connects to the running daemon and resolves env vars for a CLI.
-func ResolveViaDaemon(cliName string) (*ResolveResult, error) {
-	socketPath, err := daemonSocketPath()
-	if err != nil {
-		return nil, fmt.Errorf("resolve socket path: %w", err)
-	}
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", socketPath)
-			},
-		},
-	}
-
-	url := fmt.Sprintf("http://unix/v1/resolve/%s", cliName)
-	resp, err := client.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("daemon not reachable at %s (start with 'aimux daemon'): %w", socketPath, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		var errResp struct {
-			Error string `json:"error"`
-		}
-		json.NewDecoder(resp.Body).Decode(&errResp)
-		if errResp.Error != "" {
-			return nil, fmt.Errorf("daemon: %s", errResp.Error)
-		}
-		return nil, fmt.Errorf("daemon: %s", resp.Status)
-	}
-
-	var result ResolveResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("decode daemon response: %w", err)
-	}
-
-	return &result, nil
-}
 
 // ResolveViaDB resolves env vars for a CLI by querying the database directly.
 // Used as fallback when the daemon is not running.
@@ -306,29 +76,6 @@ func ResolveViaDB(db *sql.DB, cliName string) (*ResolveResult, error) {
 	mutatorCfg["_mutator_name"] = cli.Mutator
 
 	return resolveEnvVars(cliName, provider, mappings, mutatorCfg)
-}
-
-// StopDaemon sends a stop signal to the running daemon.
-func StopDaemon() error {
-	socketPath, err := daemonSocketPath()
-	if err != nil {
-		return err
-	}
-
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", socketPath)
-			},
-		},
-	}
-
-	resp, err := client.Post("http://unix/v1/stop", "application/json", nil)
-	if err != nil {
-		return fmt.Errorf("daemon not reachable at %s: %w", socketPath, err)
-	}
-	resp.Body.Close()
-	return nil
 }
 
 // cliBinaries maps known CLI names to their default binary names.
@@ -506,7 +253,7 @@ func RunCLI(db *sql.DB, cliName, providerName, models, reasoning string) error {
 				}
 			}
 		}()
-	
+
 		if m, ok := mutatorRegistry[cli.Mutator]; ok {
 			applyCfg := make(map[string]any)
 			if cli.MutatorConfig != "" && cli.MutatorConfig != "{}" {
