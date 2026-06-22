@@ -2337,6 +2337,7 @@ func (m *model) contextualKeys() []navPair {
 			{"d", "delete"},
 			{"r", "retry"},
 			{"t", "test"},
+			{"/", "search"},
 			{"esc", "back"},
 		}
 	case switchProviderView:
@@ -2348,6 +2349,7 @@ func (m *model) contextualKeys() []navPair {
 			{"d", "delete"},
 			{"r", "retry"},
 			{"t", "test"},
+			{"/", "search"},
 			{"esc", "back"},
 		}
 	case switchConfirmationView:
