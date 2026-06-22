@@ -11,6 +11,7 @@ builds:
     goos:
       - darwin
       - linux
+      - windows
     goarch:
       - amd64
       - arm64
@@ -23,6 +24,16 @@ builds:
 
 archives:
   - format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+    # darwin and linux use tar.gz (default)
+    # windows uses zip
+  - id: windows-archives
+    format: zip
+    goos:
+      - windows
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     files:

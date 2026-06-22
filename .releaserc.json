@@ -12,6 +12,8 @@
         {"path": "dist/aimux_*_darwin_arm64.tar.gz"},
         {"path": "dist/aimux_*_linux_amd64.tar.gz"},
         {"path": "dist/aimux_*_linux_arm64.tar.gz"},
+        {"path": "dist/aimux_*_windows_amd64.zip"},
+        {"path": "dist/aimux_*_windows_arm64.zip"},
         {"path": "dist/checksums.txt"}
       ]
     }]

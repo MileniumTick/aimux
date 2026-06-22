@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/MileniumTick/aimux/internal/domain"
@@ -68,6 +69,9 @@ func (m *CopilotShellProfile) Mutate(
 	provider domain.Provider,
 	mutatorConfig map[string]any,
 ) (*domain.BackupResult, error) {
+	if runtime.GOOS == "windows" {
+		return nil, fmt.Errorf("copilot shell profile mutator not supported on Windows — use WSL or another CLI")
+	}
 	profilePath, exportFmt, _, err := shellProfileCmds()
 	if err != nil {
 		return nil, err
@@ -189,6 +193,9 @@ func (m *CopilotShellProfile) Mutate(
 // RemoveEnvBlock removes the aimux-managed COPILOT_PROVIDER_* block from the
 // user's shell profile. Called when clearing copilot's config.
 func RemoveShellEnvBlock() error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	profilePath, _, _, err := shellProfileCmds()
 	if err != nil {
 		return err
