@@ -8,11 +8,12 @@ import (
 
 const (
 	menuItemSwitch          = 0
-	menuItemManageProviders = 1
-	menuItemManageCLIs      = 2
-	menuItemRestore         = 3
-	menuItemExit            = 4
-	menuItemCount           = 5
+	menuItemLaunch          = 1
+	menuItemManageProviders = 2
+	menuItemManageCLIs      = 3
+	menuItemRestore         = 4
+	menuItemExit            = 5
+	menuItemCount           = 6
 )
 
 // MenuItemCount returns the number of menu items.
@@ -28,7 +29,8 @@ func RenderMenu(selectedIndex int, hasProviders bool) string {
 		desc    string
 		enabled bool
 	}{
-		{"Switch", "Activate a provider for a CLI", hasProviders},
+		{"Bind CLI", "Assign a provider to a CLI and write config", hasProviders},
+		{"Launch", "Run a CLI agent with any provider (no config write)", hasProviders},
 		{"Manage Providers", "Add, edit, or remove providers", true},
 		{"Manage CLIs", "Configure target CLI paths", true},
 		{"Restore Backup", "Revert to a previous config", true},

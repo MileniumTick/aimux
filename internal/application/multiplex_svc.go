@@ -245,6 +245,35 @@ func (uc *SwitchUseCases) UpdateCLIConfigPath(id int64, configPath string) error
 	return uc.cliRepo.Update(cli)
 }
 
+// UpdateCLIConfig updates a CLI's config path, mutator_config, and optionally
+// sets binary_path in mutator_config.
+func (uc *SwitchUseCases) UpdateCLIConfig(id int64, configPath, mutatorConfig, binaryPath string) error {
+	cli, err := uc.cliRepo.Get(id)
+	if err != nil {
+		return fmt.Errorf("get target cli %d: %w", id, err)
+	}
+	cli.ConfigPath = configPath
+
+	// Merge binary_path into mutator_config
+	if mutatorConfig != "" && mutatorConfig != "{}" {
+		cli.MutatorConfig = mutatorConfig
+	}
+	if binaryPath != "" {
+		var mc map[string]any
+		if cli.MutatorConfig != "" && cli.MutatorConfig != "{}" {
+			json.Unmarshal([]byte(cli.MutatorConfig), &mc)
+		}
+		if mc == nil {
+			mc = make(map[string]any)
+		}
+		mc["binary_path"] = binaryPath
+		if data, err := json.Marshal(mc); err == nil {
+			cli.MutatorConfig = string(data)
+		}
+	}
+	return uc.cliRepo.Update(cli)
+}
+
 // GetActiveForCLI returns the active multiplex for a given target CLI.
 func (uc *SwitchUseCases) GetActiveForCLI(targetCLIID int64) (*domain.ActiveMultiplex, error) {
 	am, err := uc.multiplexRepo.GetActive(targetCLIID)

@@ -2,14 +2,19 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/MileniumTick/aimux/internal/application"
 	"github.com/MileniumTick/aimux/internal/domain"
+	"github.com/MileniumTick/aimux/internal/infrastructure/daemon"
 	"github.com/MileniumTick/aimux/internal/infrastructure/mutators"
 	sqlite2 "github.com/MileniumTick/aimux/internal/infrastructure/sqlite"
 	"github.com/MileniumTick/aimux/internal/infrastructure/update"
@@ -109,10 +114,44 @@ func setupDB() (db *sql.DB, cleanup func(), err error) {
 }
 
 func runTUI(providerUseCases *application.ProviderUseCases, switchUseCases *application.SwitchUseCases) {
-	model := tui.NewModel(providerUseCases, switchUseCases, version)
-	program := tea.NewProgram(model, tea.WithAltScreen())
-	if _, err := program.Run(); err != nil {
-		log.Fatalf("Error running program: %v", err)
+	for {
+		model := tui.NewModel(providerUseCases, switchUseCases, version)
+		program := tea.NewProgram(model, tea.WithAltScreen())
+		if _, err := program.Run(); err != nil {
+			log.Fatalf("Error running program: %v", err)
+		}
+
+		// Check for launch request
+		launchPath := filepath.Join(os.Getenv("HOME"), ".config", "aimux", ".launch")
+		data, err := os.ReadFile(launchPath)
+		if err != nil {
+			break
+		}
+		os.Remove(launchPath)
+
+		var launchReq struct {
+			CLI      string `json:"cli"`
+			Provider string `json:"provider"`
+			Models   string `json:"models"`
+		}
+		if err := json.Unmarshal(data, &launchReq); err != nil || launchReq.CLI == "" {
+			break
+		}
+
+		log.Printf("TUI requested launch: cli=%s provider=%s models=%s", launchReq.CLI, launchReq.Provider, launchReq.Models)
+
+		db, cleanup, err := setupDB()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			break
+		}
+		if err := daemon.RunCLI(db, launchReq.CLI, launchReq.Provider, launchReq.Models); err != nil {
+			fmt.Fprintf(os.Stderr, "\nError launching: %v\n", err)
+			fmt.Println("Press Enter to return to aimux...")
+			fmt.Scanln()
+		}
+		cleanup()
+		// Loop: re-open TUI after agent finishes
 	}
 }
 
@@ -234,6 +273,91 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 			os.Exit(1)
 		}
 
+	case "daemon":
+		fmt.Println("Starting aimux daemon...")
+		socketPath, err := daemon.StartDaemon(db)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Daemon stopped. Socket: %s\n", socketPath)
+
+	case "daemon-stop":
+		if err := daemon.StopDaemon(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Daemon stopped.")
+
+	case "run":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: aimux run <cli-name> [args...]")
+			fmt.Fprintln(os.Stderr, "Examples:")
+			fmt.Fprintln(os.Stderr, "  aimux run claude-code")
+			fmt.Fprintln(os.Stderr, "  aimux run opencode --fast")
+			os.Exit(1)
+		}
+		if err := daemon.RunCLI(db, args[1], "", ""); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "exec":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: aimux exec <cli-name> -- <command> [args...]")
+			fmt.Fprintln(os.Stderr, "Example: aimux exec claude-code -- claude")
+			os.Exit(1)
+		}
+
+		cliName := args[1]
+		var cmdArgs []string
+		if len(args) > 2 && args[2] == "--" {
+			cmdArgs = args[3:]
+		} else {
+			cmdArgs = args[2:]
+		}
+
+		if len(cmdArgs) == 0 {
+			fmt.Fprintf(os.Stderr, "Error: no command specified after CLI name\n")
+			os.Exit(1)
+		}
+
+		// Try daemon first, fall back to direct DB
+		result, err := daemon.ResolveViaDaemon(cliName)
+		if err != nil {
+			log.Printf("daemon not reachable, falling back to direct DB: %v", err)
+			result, err = daemon.ResolveViaDB(db, cliName)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
+		log.Printf("exec %s → %s: %d env vars", cliName, result.ProviderName, len(result.Env))
+
+		// Build env: our vars first, then inherit non-conflicting vars
+		env := make([]string, 0, len(result.Env)+len(os.Environ()))
+		for k, v := range result.Env {
+			env = append(env, k+"="+v)
+		}
+		managed := make(map[string]bool, len(result.Env))
+		for k := range result.Env {
+			managed[k] = true
+		}
+		for _, e := range os.Environ() {
+			eq := strings.IndexByte(e, '=')
+			if eq > 0 {
+				key := e[:eq]
+				if !managed[key] {
+					env = append(env, e)
+				}
+			}
+		}
+		if err := syscall.Exec(cmdArgs[0], cmdArgs, env); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", args[0])
 		printHelp()
@@ -247,14 +371,23 @@ func printHelp() {
 Usage:
   aimux                    Launch TUI (default)
   aimux apply <cli-name>   Apply active provider binding for a CLI
+  aimux run <cli> [args]   Launch a CLI agent with resolved credentials (auto-detect binary)
+  aimux exec <cli> -- ...  Run a command with resolved env vars (daemon or direct)
   aimux list               Show active multiplexes
   aimux backups <cli-name> List centralized backups for a CLI
   aimux restore <cli-name> Restore the latest backup for a CLI
+  aimux daemon             Start the credential daemon (Unix socket)
+  aimux daemon-stop        Stop the running daemon
   aimux version            Show version and check for updates
   aimux update             Update aimux to the latest release
 
 Examples:
   aimux apply claude-code
+  aimux run claude-code
+  aimux run opencode --fast
+  aimux exec claude-code -- claude
+  aimux daemon
+  aimux daemon-stop
   aimux backups claude-code
   aimux restore claude-code
 `)
