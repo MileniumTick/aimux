@@ -1276,7 +1276,8 @@ func (m *model) launchShowModels() (tea.Model, tea.Cmd) {
 		}
 	}
 
-	usesEnvMapping := cliMutator == "claude-settings-json" || cliMutator == "codex-config-toml"
+	usesEnvMapping := cliMutator == "claude-settings-json" || cliMutator == "codex-config-toml" ||
+		m.launchCLIName == "claude-code" || m.launchCLIName == "codex"
 	m.switchUsesEnvMapping = usesEnvMapping
 
 	// Reset model data
@@ -2866,7 +2867,41 @@ func (m *model) editSelectedBinding() (tea.Model, tea.Cmd) {
 
 	// Determine CLI type to pick the right form
 	for _, c := range m.targetCLIs {
-		if c.ID == m.switchTargetCLIID && c.Mutator == "copilot-shell-profile" {
+		if c.ID != m.switchTargetCLIID {
+			continue
+		}
+
+		// Env-mapping CLI (Claude Code, Codex): show env-var mapping form
+		if c.Mutator == "claude-settings-json" || c.Mutator == "codex-config-toml" ||
+			c.Name == "claude-code" || c.Name == "codex" {
+			var envVars []string
+			if c.EnvVars != "" {
+				json.Unmarshal([]byte(c.EnvVars), &envVars)
+			}
+			if len(envVars) == 0 {
+				envVars = []string{"ANTHROPIC_MODEL"}
+			}
+			m.switchEnvVars = envVars
+
+			// Parse current env-var mappings for pre-fill
+			var curMps map[string]string
+			currentEnvMappings := make(map[string]string)
+			if err := json.Unmarshal([]byte(bp.ModelMappings), &curMps); err == nil {
+				for k, v := range curMps {
+					if !strings.HasPrefix(k, "_") {
+						currentEnvMappings[k] = v
+					}
+				}
+			}
+
+			form, extractFn := NewMapModelsForm(envVars, models, currentEnvMappings)
+			m.switchExtractFn = extractFn
+			m.setForm(form)
+			m.currentView = switchMapModelsView
+			return m, m.form.Init()
+		}
+
+		if c.Mutator == "copilot-shell-profile" {
 			// Copilot: single model select
 			defaultModel := ""
 			if len(currentModels) > 0 {
@@ -3221,8 +3256,9 @@ func (m *model) proceedFromProviderSelection() (tea.Model, tea.Cmd) {
 	}
 	m.switchProviderModels = models
 
-	m.switchUsesEnvMapping = targetCLI.Mutator == "claude-settings-json" || targetCLI.Mutator == "codex-config-toml"
-	m.switchIsCopilot = targetCLI.Mutator == "copilot-shell-profile"
+	m.switchUsesEnvMapping = targetCLI.Mutator == "claude-settings-json" || targetCLI.Mutator == "codex-config-toml" ||
+		targetCLI.Name == "claude-code" || targetCLI.Name == "codex"
+	m.switchIsCopilot = targetCLI.Mutator == "copilot-shell-profile" || targetCLI.Name == "github-copilot"
 
 	if m.switchUsesEnvMapping {
 		m.currentView = switchMapModelsView

@@ -343,14 +343,25 @@ func NewEditCLIPathForm(cli *domain.TargetCLI, result *EditCLIPathResult) *huh.F
 }
 
 // NewMapModelsForm creates a dynamic form with one Select per env var.
+// preSelected optionally pre-fills env-var values for editing existing bindings.
 // Returns the form and a function to extract the mapping result after completion.
-func NewMapModelsForm(envVars []string, models []domain.ProviderModel) (*huh.Form, func() MapModelsResult) {
+func NewMapModelsForm(envVars []string, models []domain.ProviderModel, preSelected ...map[string]string) (*huh.Form, func() MapModelsResult) {
 	// Create value pointers for each env var
 	type envVarBinding struct {
 		name  string
 		value string
 	}
 	bindings := make([]envVarBinding, len(envVars))
+
+	// Pre-fill with existing values if provided
+	for i, ev := range envVars {
+		bindings[i].name = ev
+		if len(preSelected) > 0 {
+			if v, ok := preSelected[0][ev]; ok {
+				bindings[i].value = v
+			}
+		}
+	}
 
 	// Build model options
 	opts := make([]huh.Option[string], 0, len(models)+1)
