@@ -157,8 +157,8 @@ func SelfUpdate(currentVersion, execPath string) error {
 	return nil
 }
 
-// isHomebrewInstall checks if the binary is installed via Homebrew.
-func isHomebrewInstall(execPath string) bool {
+// IsHomebrewInstall checks if the binary is installed via Homebrew.
+func IsHomebrewInstall(execPath string) bool {
 	cmd := exec.Command("brew", "--prefix")
 	output, err := cmd.Output()
 	if err != nil {
@@ -168,13 +168,8 @@ func isHomebrewInstall(execPath string) bool {
 	return strings.HasPrefix(execPath, brewPrefix)
 }
 
-// isHomebrewInstallExported is the exported wrapper for use from main.go.
-func IsHomebrewInstall(execPath string) bool {
-	return isHomebrewInstall(execPath)
-}
-
-// homebrewUpdate runs brew upgrade for the aimux tap.
-func homebrewUpdate() int {
+// HomebrewUpdate runs brew upgrade for the aimux tap.
+func HomebrewUpdate() int {
 	cmd := exec.Command("brew", "upgrade", "MileniumTick/tap/aimux")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -184,11 +179,6 @@ func homebrewUpdate() int {
 	}
 	fmt.Println("aimux updated successfully via Homebrew.")
 	return 0
-}
-
-// HomebrewUpdate is the exported wrapper for use from main.go.
-func HomebrewUpdate() int {
-	return homebrewUpdate()
 }
 
 // checkWritePermission tests write access by creating a temp file in the binary's directory.

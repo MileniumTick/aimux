@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -10,7 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -20,36 +21,35 @@ import (
 var (
 	ErrConfigNotFound = errors.New("config file not found")
 	ErrConfigParse    = errors.New("could not parse config file: invalid JSON")
-	ErrFlockTimeout   = errors.New("could not acquire file lock: timeout")
-	ErrTempFileCreate = errors.New("could not create temporary file")
-	ErrTempFileWrite  = errors.New("could not write to temporary file")
-	ErrAtomicRename   = errors.New("could not rename temp file atomically")
-	ErrSyncFile       = errors.New("could not sync config file to disk")
 )
+
+var errFlockTimeout = errors.New("could not acquire file lock: timeout")
+var errTempFileCreate = errors.New("could not create temporary file")
+var errTempFileWrite = errors.New("could not write to temporary file")
+var errAtomicRename = errors.New("could not rename temp file atomically")
+var errSyncFile = errors.New("could not sync config file to disk")
 
 const flockTimeout = 2 * time.Second
 
 // AcquireFlock acquires a shared/exclusive lock on the given file using
-// gofrs/flock (cross-platform). Uses goroutine with timeout, like original flock.
+// gofrs/flock (cross-platform). Uses context-based TryLockContext.
 func AcquireFlock(f *os.File, exclusive bool, timeout time.Duration) error {
 	fl := flock.New(f.Name())
-	ch := make(chan error, 1)
-	go func() {
-		if exclusive {
-			ch <- fl.Lock()
-		} else {
-			ch <- fl.RLock()
-		}
-	}()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 
-	select {
-	case err := <-ch:
-		return err
-	case <-time.After(timeout):
-		// Best-effort unlock via TryLock is not possible from outside the goroutine.
-		// The goroutine will eventually acquire the lock and return.
-		return ErrFlockTimeout
+	lockFn := fl.TryRLockContext
+	if exclusive {
+		lockFn = fl.TryLockContext
 	}
+	ok, err := lockFn(ctx, 50*time.Millisecond)
+	if err != nil {
+		return fmt.Errorf("acquire lock: %w", err)
+	}
+	if !ok {
+		return errFlockTimeout
+	}
+	return nil
 }
 
 // trailingCommaRE matches a comma followed by optional whitespace and a closing
@@ -107,7 +107,7 @@ func AtomicWrite(data []byte, path string) error {
 
 	tmpFile, err := os.CreateTemp(dir, "*.tmp")
 	if err != nil {
-		return ErrTempFileCreate
+		return fmt.Errorf("create temp file: %w", errTempFileCreate)
 	}
 
 	written := false
@@ -119,20 +119,20 @@ func AtomicWrite(data []byte, path string) error {
 
 	if _, err := tmpFile.Write(data); err != nil {
 		tmpFile.Close()
-		return ErrTempFileWrite
+		return fmt.Errorf("write temp file: %w", errTempFileWrite)
 	}
 
 	if err := tmpFile.Sync(); err != nil {
 		tmpFile.Close()
-		return ErrSyncFile
+		return fmt.Errorf("sync file: %w", errSyncFile)
 	}
 
 	if err := tmpFile.Close(); err != nil {
-		return ErrTempFileWrite
+		return fmt.Errorf("write temp file: %w", errTempFileWrite)
 	}
 
 	if err := os.Rename(tmpFile.Name(), path); err != nil {
-		return ErrAtomicRename
+		return fmt.Errorf("rename temp file atomically: %w", errAtomicRename)
 	}
 
 	written = true
@@ -246,15 +246,11 @@ func ListBackups(path string) ([]BackupEntry, error) {
 		})
 	}
 	// newest first (timestamp is lexicographically sortable)
-	sort.Sort(sort.Reverse(backupEntrySlice(out)))
+	slices.SortStableFunc(out, func(a, b BackupEntry) int {
+		return strings.Compare(b.When, a.When)
+	})
 	return out, nil
 }
-
-type backupEntrySlice []BackupEntry
-
-func (s backupEntrySlice) Len() int           { return len(s) }
-func (s backupEntrySlice) Less(i, j int) bool { return s[i].When < s[j].When }
-func (s backupEntrySlice) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 
 // PruneBackups removes old backups beyond max, keeping the most recent ones.
 func PruneBackups(path string, max int) {
