@@ -261,6 +261,7 @@ type model struct {
 	launchModelMappings    map[string]string // env→model mappings for launch
 	launchRegisteredModels []string          // registered models for launch
 	launchReasoning        string            // reasoning level for launch
+	launchFlow             bool              // true when in launch flow (Enter in provider view → launch not switch)
 
 	showHelp bool // when true, render help overlay instead of current view
 
@@ -422,10 +423,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Resize the provider viewport dimensions without resetting scroll position
-		if m.currentView == providerListView {
+		if m.currentView == providerListView || m.currentView == switchProviderView {
 			l := m.computeLayout()
 			if m.width > 0 && l.bodyH > 0 {
-				m.providerViewport.Width = m.width
+				m.providerViewport.Width = m.providerListVPWidth()
 				m.providerViewport.Height = l.bodyH
 			}
 		}
@@ -1031,6 +1032,11 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.switchRemoveMode = false
 				return m.enterManageBindingsView()
 			}
+			if m.launchFlow {
+				m.launchFlow = false
+				m.currentView = dashboardView
+				return m, nil
+			}
 			m.currentView = switchTargetCLIView
 			m.switchTargetCLIID = 0
 			m.setForm(NewSelectTargetCLIForm(m.targetCLIs, &m.switchTargetCLIID))
@@ -1232,6 +1238,7 @@ func (m *model) startLaunchFlow() (tea.Model, tea.Cmd) {
 	m.launchCLIName = ""
 	m.launchProviderID = 0
 	m.launchModelName = ""
+	m.launchFlow = true
 
 	cliOpts := make([]huh.Option[string], len(clis))
 	for i, c := range clis {
@@ -1245,14 +1252,7 @@ func (m *model) startLaunchFlow() (tea.Model, tea.Cmd) {
 				Description("Select a CLI to launch").
 				Options(cliOpts...).
 				Value(&m.launchCLIName),
-		).Title("1. Target CLI"),
-		huh.NewGroup(
-			huh.NewSelect[int64]().
-				Title("Select Provider").
-				Filtering(true).
-				Options(m.providerOptions()...).
-				Value(&m.launchProviderID),
-		).Title("2. Provider"),
+		),
 	).WithTheme(HuhTheme()))
 
 	m.currentView = launchCLIView
@@ -1855,11 +1855,21 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 
 	case launchCLIView:
 		m.form = nil
-		if m.launchCLIName == "" || m.launchProviderID == 0 {
+		if m.launchCLIName == "" {
 			m.currentView = dashboardView
 			return m, nil
 		}
-		return m.launchShowModels()
+		// Go to rich provider card selector for launch
+		for _, c := range m.targetCLIs {
+			if c.Name == m.launchCLIName {
+				m.switchTargetCLIID = c.ID
+				break
+			}
+		}
+		m.switchProviderID = 0
+		m.launchProviderID = 0
+		m.currentView = switchProviderView
+		return m, nil
 
 	case launchModelView:
 		m.form = nil
@@ -2486,13 +2496,27 @@ func (m *model) renderProviderViewportContent() string {
 	return strings.Join(parts, "\n")
 }
 
+// providerListVPWidth returns the viewport width that matches card width so the
+// list appears centered in the terminal instead of stretched full-width.
+func (m *model) providerListVPWidth() int {
+	cardW := m.width - 8
+	if cardW < 40 {
+		cardW = 40
+	}
+	if cardW > 80 {
+		cardW = 80
+	}
+	vpW := cardW + 4 // border(2) + padding(2)
+	return vpW
+}
+
 func (m *model) syncProviderViewport() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
 	layout := m.computeLayout()
 	content := m.renderProviderViewportContent()
-	m.providerViewport.Width = m.width
+	m.providerViewport.Width = m.providerListVPWidth()
 	m.providerViewport.Height = layout.bodyH
 	m.providerViewport.SetContent(content)
 }
@@ -2553,7 +2577,7 @@ func (m *model) syncSwitchProviderViewport() {
 	}
 	layout := m.computeLayout()
 	content := m.renderSwitchProviderView()
-	m.providerViewport.Width = m.width
+	m.providerViewport.Width = m.providerListVPWidth()
 	m.providerViewport.Height = layout.bodyH
 	m.providerViewport.SetContent(content)
 }
@@ -3154,6 +3178,13 @@ func (m *model) proceedFromProviderSelection() (tea.Model, tea.Cmd) {
 		m.currentView = deleteBindingConfirmView
 		m.setForm(NewDeleteConfirmForm(providerName, &m.switchDeleteConfirm))
 		return m, m.form.Init()
+	}
+
+	// Launch flow: select provider → proceed to launch model selection, not switch binding
+	if m.launchFlow {
+		m.launchFlow = false
+		m.launchProviderID = m.switchProviderID
+		return m.launchShowModels()
 	}
 
 	var targetCLI *domain.TargetCLI
