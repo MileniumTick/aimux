@@ -313,9 +313,20 @@ func CreateIndexes(db *sql.DB) error {
 // SeedTargetCLIs inserts the default target CLI rows.
 // Idempotent via INSERT OR IGNORE.
 // SeedDefaultProviders inserts curated default providers from models.dev catalog.
+// Only seeds when no providers exist yet — first-run only. Once a user adds
+// their own providers, defaults are NOT re-inserted.
 // Idempotent via INSERT OR IGNORE on provider name. Providers without an entry in
 // models.dev use well-known public endpoints. Logo URLs are from models.dev/logos.
 func SeedDefaultProviders(db *sql.DB) error {
+	// Check if any providers already exist — skip if user has configured any.
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM providers`).Scan(&count); err != nil {
+		return fmt.Errorf("check provider count: %w", err)
+	}
+	if count > 0 {
+		return nil // already has providers, don't seed defaults
+	}
+
 	stmt := `INSERT OR IGNORE INTO providers (name, base_url, logo_url, status)
 		VALUES (?, ?, ?, 'active')`
 
