@@ -41,9 +41,9 @@ func (r *ProviderRepository) Add(name, baseURL, discoveryURL, apiKey, authToken 
 func (r *ProviderRepository) Get(id int64) (domain.Provider, error) {
 	var p domain.Provider
 	err := r.DB.QueryRow(
-		`SELECT id, name, base_url, discovery_url, default_context_window, api_key, auth_token, status, created_at, updated_at FROM providers WHERE id = ?`,
+		`SELECT id, name, base_url, discovery_url, default_context_window, logo_url, api_key, auth_token, status, created_at, updated_at FROM providers WHERE id = ?`,
 		id,
-	).Scan(&p.ID, &p.Name, &p.BaseURL, &p.DiscoveryURL, &p.DefaultContextWindow, &p.APIKey, &p.AuthToken, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.Name, &p.BaseURL, &p.DiscoveryURL, &p.DefaultContextWindow, &p.LogoURL, &p.APIKey, &p.AuthToken, &p.Status, &p.CreatedAt, &p.UpdatedAt)
 	if err != nil {
 		return p, fmt.Errorf("get provider %d: %w", id, err)
 	}
@@ -53,7 +53,7 @@ func (r *ProviderRepository) Get(id int64) (domain.Provider, error) {
 // List returns all providers ordered by name ascending.
 func (r *ProviderRepository) List() ([]domain.Provider, error) {
 	rows, err := r.DB.Query(
-		`SELECT id, name, base_url, discovery_url, default_context_window, api_key, auth_token, status, created_at, updated_at FROM providers ORDER BY name ASC`,
+		`SELECT id, name, base_url, discovery_url, default_context_window, logo_url, api_key, auth_token, status, created_at, updated_at FROM providers ORDER BY name ASC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list providers: %w", err)
@@ -63,7 +63,7 @@ func (r *ProviderRepository) List() ([]domain.Provider, error) {
 	var providers []domain.Provider
 	for rows.Next() {
 		var p domain.Provider
-		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.DiscoveryURL, &p.DefaultContextWindow, &p.APIKey, &p.AuthToken, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.DiscoveryURL, &p.DefaultContextWindow, &p.LogoURL, &p.APIKey, &p.AuthToken, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan provider: %w", err)
 		}
 		providers = append(providers, p)
@@ -158,6 +158,45 @@ func (r *ProviderRepository) DeleteModelsByProvider(providerID int64) error {
 	_, err := r.DB.Exec(`DELETE FROM provider_models WHERE provider_id = ?`, providerID)
 	if err != nil {
 		return fmt.Errorf("delete models for provider %d: %w", providerID, err)
+	}
+	return nil
+}
+
+// AddCustomModels inserts custom model names for a provider, skipping duplicates.
+// Uses INSERT OR IGNORE so existing models (from API fetch) are preserved.
+func (r *ProviderRepository) AddCustomModels(providerID int64, modelNames []string) error {
+	if len(modelNames) == 0 {
+		return nil
+	}
+	// Deduplicate
+	seen := make(map[string]struct{}, len(modelNames))
+	unique := make([]string, 0, len(modelNames))
+	for _, name := range modelNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		unique = append(unique, name)
+	}
+	if len(unique) == 0 {
+		return nil
+	}
+
+	stmt := `INSERT OR IGNORE INTO provider_models (provider_id, model_name) VALUES `
+	var args []any
+	placeholders := make([]string, 0, len(unique))
+	for _, name := range unique {
+		placeholders = append(placeholders, "(?, ?)")
+		args = append(args, providerID, name)
+	}
+	stmt += strings.Join(placeholders, ", ")
+	_, err := r.DB.Exec(stmt, args...)
+	if err != nil {
+		return fmt.Errorf("add custom models: %w", err)
 	}
 	return nil
 }

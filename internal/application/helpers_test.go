@@ -38,6 +38,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 	if err := sqlite.MigrationAddDefaultContextWindow(db); err != nil {
 		t.Fatalf("failed to add default_context_window: %v", err)
 	}
+	if err := sqlite.MigrationAddLogoURL(db); err != nil {
+		t.Fatalf("failed to add logo_url: %v", err)
+	}
 	if err := sqlite.CreateIndexes(db); err != nil {
 		t.Fatalf("failed to create indexes: %v", err)
 	}

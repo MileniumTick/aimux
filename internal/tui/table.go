@@ -9,7 +9,8 @@ import (
 )
 
 // RenderProviderList renders the provider management list with card-based styling.
-// Each provider is displayed as a bordered card with status badge, URL, and model count.
+// Each provider is displayed as a bordered card with status badge, URL, model count,
+// and a logo indicator when a logo URL is available.
 func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth int, allModels []domain.ProviderModel, activeMultiplexes []domain.ActiveMultiplex) string {
 	if len(providers) == 0 {
 		empty := lipgloss.NewStyle().
@@ -106,12 +107,22 @@ func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth
 		modelInfo := fmt.Sprintf("  %d models", modelCounts[p.ID])
 		modelLine := urlStyle.Render(modelInfo)
 
+		// Logo indicator — compact link when provider has a logo URL
+		var logoLine string
+		if p.LogoURL != "" {
+			logoDisplay := truncateText(p.LogoURL, maxTextW-4)
+			logoLine = truncateTextStyle("  "+logoDisplay, urlStyle.Copy().Faint(true).Italic(true), maxTextW)
+		}
+
 		// Build card content
 		cardContent := lipgloss.JoinVertical(lipgloss.Left,
 			nameLine,
 			urlLine,
 			modelLine,
 		)
+		if logoLine != "" {
+			cardContent = lipgloss.JoinVertical(lipgloss.Left, cardContent, logoLine)
+		}
 
 		// Wrap in bordered card; selected gets accent border + ▸ indicator
 		cardStyle := lipgloss.NewStyle().

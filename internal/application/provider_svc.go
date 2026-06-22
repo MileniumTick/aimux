@@ -32,6 +32,7 @@ func NewProviderUseCases(providerRepo domain.ProviderRepository, multiplexRepo d
 }
 
 // Add creates a new provider and fetches its models.
+// customModels are always inserted (supplement fetched models or serve as fallback).
 func (uc *ProviderUseCases) Add(name, baseURL, discoveryURL, apiKey, authToken string, defaultContextWindow ...int64) (int64, error) {
 	id, err := uc.providerRepo.Add(name, baseURL, discoveryURL, apiKey, authToken, defaultContextWindow...)
 	if err != nil {
@@ -42,8 +43,9 @@ func (uc *ProviderUseCases) Add(name, baseURL, discoveryURL, apiKey, authToken s
 	}
 
 	// Trigger model fetch
-	if fetchErr := uc.FetchModels(id, baseURL, discoveryURL, authToken); fetchErr != nil {
-		// Fetch failure is non-fatal — provider is saved with error status
+	fetchErr := uc.FetchModels(id, baseURL, discoveryURL, authToken)
+
+	if fetchErr != nil {
 		_ = uc.providerRepo.UpdateStatus(id, "error")
 		return id, fmt.Errorf("provider created but model fetch failed: %w", fetchErr)
 	}
@@ -79,6 +81,73 @@ func (uc *ProviderUseCases) Update(id int64, baseURL, discoveryURL, apiKey, auth
 // Delete removes a provider by ID.
 func (uc *ProviderUseCases) Delete(id int64) error {
 	return uc.providerRepo.Delete(id)
+}
+
+// AddWithCustomModels creates a provider and inserts custom fallback models
+// regardless of whether the API model fetch succeeds or fails.
+// customModels are comma-separated model IDs.
+func (uc *ProviderUseCases) AddWithCustomModels(name, baseURL, discoveryURL, apiKey, authToken string, customModels string, defaultContextWindow ...int64) (int64, error) {
+	id, err := uc.providerRepo.Add(name, baseURL, discoveryURL, apiKey, authToken, defaultContextWindow...)
+	if err != nil {
+		if strings.Contains(err.Error(), "already exists") {
+			return 0, err
+		}
+		return 0, fmt.Errorf("add provider: %w", err)
+	}
+
+	// Parse custom models
+	var fallbackNames []string
+	if customModels != "" {
+		for _, p := range strings.Split(customModels, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				fallbackNames = append(fallbackNames, p)
+			}
+		}
+	}
+
+	// Try API fetch
+	fetchErr := uc.FetchModels(id, baseURL, discoveryURL, authToken)
+
+	// Always insert custom models (supplement fetched or serve as fallback)
+	if len(fallbackNames) > 0 {
+		if cmErr := uc.providerRepo.AddCustomModels(id, fallbackNames); cmErr != nil {
+			// Non-fatal
+			_ = cmErr
+		}
+	}
+
+	if fetchErr != nil {
+		if len(fallbackNames) > 0 {
+			// Has custom models — keep active
+			_ = uc.providerRepo.UpdateStatus(id, "active")
+			return id, fmt.Errorf("provider created with fallback models, but model fetch failed: %w", fetchErr)
+		}
+		_ = uc.providerRepo.UpdateStatus(id, "error")
+		return id, fmt.Errorf("provider created but model fetch failed: %w", fetchErr)
+	}
+
+	return id, nil
+}
+
+// AddCustomModels inserts custom model names for an existing provider.
+func (uc *ProviderUseCases) AddCustomModels(providerID int64, modelNames []string) error {
+	if len(modelNames) == 0 {
+		return nil
+	}
+	if err := uc.providerRepo.AddCustomModels(providerID, modelNames); err != nil {
+		return fmt.Errorf("add custom models: %w", err)
+	}
+	// If provider was in error state and now has models, reactivate
+	provider, err := uc.providerRepo.Get(providerID)
+	if err == nil && provider.Status == "error" {
+		// Check if it has any models now
+		models, listErr := uc.providerRepo.ListModels(providerID)
+		if listErr == nil && len(models) > 0 {
+			_ = uc.providerRepo.UpdateStatus(providerID, "active")
+		}
+	}
+	return nil
 }
 
 // FetchModels fetches models from the provider's API.

@@ -73,6 +73,7 @@ const (
 	launchModelView
 	launchReasoningView
 	switchReasoningView
+	manageModelsView
 )
 
 // uiLayout holds the precomputed screen regions (A3).
@@ -138,35 +139,37 @@ type (
 )
 
 type keyMap struct {
-	Up     key.Binding
-	Down   key.Binding
-	Enter  key.Binding
-	Esc    key.Binding
-	Quit   key.Binding
-	Add    key.Binding
-	Delete key.Binding
-	Retry  key.Binding
-	Test   key.Binding
-	Edit   key.Binding
-	Help   key.Binding
-	Undo   key.Binding
-	Launch key.Binding
+	Up           key.Binding
+	Down         key.Binding
+	Enter        key.Binding
+	Esc          key.Binding
+	Quit         key.Binding
+	Add          key.Binding
+	Delete       key.Binding
+	Retry        key.Binding
+	Test         key.Binding
+	Edit         key.Binding
+	Help         key.Binding
+	CustomModels key.Binding
+	Undo         key.Binding
+	Launch       key.Binding
 }
 
 var menuKeys = keyMap{
-	Up:     key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
-	Down:   key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
-	Enter:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select")),
-	Esc:    key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
-	Quit:   key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
-	Add:    key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add provider")),
-	Delete: key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete provider")),
-	Retry:  key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "retry fetch")),
-	Test:   key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "test")),
-	Edit:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit provider")),
-	Help:   key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
-	Undo:   key.NewBinding(key.WithKeys("Z"), key.WithHelp("Z", "undo last apply")),
-	Launch: key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "launch agent")),
+	Up:           key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("↑/k", "up")),
+	Down:         key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down")),
+	Enter:        key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "select")),
+	Esc:          key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+	Quit:         key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+	Add:          key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add provider")),
+	Delete:       key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete provider")),
+	Retry:        key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "retry fetch")),
+	Test:         key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "test")),
+	Edit:         key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit provider")),
+	CustomModels: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "custom models")),
+	Help:         key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+	Undo:         key.NewBinding(key.WithKeys("Z"), key.WithHelp("Z", "undo last apply")),
+	Launch:       key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "launch agent")),
 }
 
 // ShortHelp implements help.KeyMap (A1).
@@ -178,7 +181,7 @@ func (k keyMap) ShortHelp() []key.Binding {
 func (k keyMap) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Up, k.Down, k.Enter, k.Esc},
-		{k.Add, k.Delete, k.Edit, k.Retry, k.Test},
+		{k.Add, k.Delete, k.Edit, k.Retry, k.Test, k.CustomModels},
 		{k.Undo, k.Help, k.Quit},
 	}
 }
@@ -234,16 +237,17 @@ type model struct {
 	switchStepLabel  string // current step label
 
 	selectedProviderID int64
+	manageModelsResult ManageModelsResult
 
 	selectedCLIID     int64
 	editCLIPathResult EditCLIPathResult
 
-	launchCLIName          string              // CLI name selected for launching via TUI
-	launchProviderID       int64               // provider ID for launch
-	launchModelName        string              // single model override for launch
-	launchModelMappings    map[string]string   // env→model mappings for launch
-	launchRegisteredModels []string            // registered models for launch
-	launchReasoning        string              // reasoning level for launch
+	launchCLIName          string            // CLI name selected for launching via TUI
+	launchProviderID       int64             // provider ID for launch
+	launchModelName        string            // single model override for launch
+	launchModelMappings    map[string]string // env→model mappings for launch
+	launchRegisteredModels []string          // registered models for launch
+	launchReasoning        string            // reasoning level for launch
 
 	showHelp bool // when true, render help overlay instead of current view
 
@@ -729,6 +733,14 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.setForm(NewEditProviderForm(*provider, &m.editProviderResult))
 					return m, m.form.Init()
 				}
+			}
+		case key.Matches(msg, menuKeys.CustomModels):
+			if m.selectedProviderID > 0 {
+				m.manageModelsResult = ManageModelsResult{}
+				providerName := m.getProviderName(m.selectedProviderID)
+				m.currentView = manageModelsView
+				m.setForm(NewManageModelsForm(providerName, &m.manageModelsResult))
+				return m, m.form.Init()
 			}
 		case key.Matches(msg, menuKeys.Esc), key.Matches(msg, menuKeys.Quit):
 			m.currentView = dashboardView
@@ -1223,7 +1235,8 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		apiKey := strings.TrimSpace(m.addProviderResult.APIKey)
 		authToken := strings.TrimSpace(m.addProviderResult.AuthToken)
 		dcw := parseContextWindowStr(m.addProviderResult.DefaultContextWindowStr)
-		_, err := m.providerUseCases.Add(name, baseURL, discoveryURL, apiKey, authToken, dcw)
+		customModels := m.addProviderResult.CustomModels
+		_, err := m.providerUseCases.AddWithCustomModels(name, baseURL, discoveryURL, apiKey, authToken, customModels, dcw)
 		if err != nil {
 			return m, tea.Batch(func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }, func() tea.Msg {
 				return notificationMsg{message: fmt.Sprintf("Add failed: %s", err.Error()), isError: true}
@@ -1646,6 +1659,38 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 	case launchReasoningView:
 		m.form = nil
 		return m.launchAgent()
+
+	case manageModelsView:
+		m.form = nil
+		m.currentView = providerListView
+		custom := m.manageModelsResult.CustomModels
+		if custom == "" {
+			return m, func() tea.Msg {
+				return notificationMsg{message: "No custom models provided", isError: false}
+			}
+		}
+		parts := strings.Split(custom, ",")
+		models := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				models = append(models, p)
+			}
+		}
+		if err := m.providerUseCases.AddCustomModels(m.selectedProviderID, models); err != nil {
+			return m, tea.Batch(
+				func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} },
+				func() tea.Msg {
+					return notificationMsg{message: fmt.Sprintf("Failed: %s", err.Error()), isError: true}
+				},
+			)
+		}
+		return m, tea.Batch(
+			func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} },
+			func() tea.Msg {
+				return notificationMsg{message: fmt.Sprintf("%d custom model(s) added", len(models)), isError: false}
+			},
+		)
 	}
 
 	return m, nil
@@ -2154,7 +2199,7 @@ func (m *model) refreshData() tea.Msg {
 
 func (m *model) previousView() viewType {
 	switch m.currentView {
-	case addProviderView, deleteProviderView, editProviderView:
+	case addProviderView, deleteProviderView, editProviderView, manageModelsView:
 		return providerListView
 	case switchAdvancedConfigView:
 		if m.switchInManageMode {
