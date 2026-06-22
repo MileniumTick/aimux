@@ -539,3 +539,22 @@ func NewRestoreBackupForm(backups []application.BackupOption, result *string) *h
 		),
 	).WithTheme(HuhTheme())
 }
+
+// newReasoningForm creates a reasoning level selector form.
+func newReasoningForm(result *string) *huh.Form {
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Reasoning Level").
+				Description("Controls how much the model thinks before responding.").
+				Options(
+					huh.NewOption("Off", "off"),
+					huh.NewOption("Low", "low"),
+					huh.NewOption("Medium", "medium"),
+					huh.NewOption("High", "high"),
+					huh.NewOption("Max", "max"),
+				).
+				Value(result),
+		).Title("Reasoning"),
+	).WithTheme(HuhTheme())
+}

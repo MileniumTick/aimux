@@ -130,22 +130,23 @@ func runTUI(providerUseCases *application.ProviderUseCases, switchUseCases *appl
 		os.Remove(launchPath)
 
 		var launchReq struct {
-			CLI      string `json:"cli"`
-			Provider string `json:"provider"`
-			Models   string `json:"models"`
+			CLI       string `json:"cli"`
+			Provider  string `json:"provider"`
+			Models    string `json:"models"`
+			Reasoning string `json:"reasoning"`
 		}
 		if err := json.Unmarshal(data, &launchReq); err != nil || launchReq.CLI == "" {
 			break
 		}
 
-		log.Printf("TUI requested launch: cli=%s provider=%s models=%s", launchReq.CLI, launchReq.Provider, launchReq.Models)
+		log.Printf("TUI requested launch: cli=%s provider=%s reasoning=%s", launchReq.CLI, launchReq.Provider, launchReq.Reasoning)
 
 		db, cleanup, err := setupDB()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			break
 		}
-		if err := daemon.RunCLI(db, launchReq.CLI, launchReq.Provider, launchReq.Models); err != nil {
+		if err := daemon.RunCLI(db, launchReq.CLI, launchReq.Provider, launchReq.Models, launchReq.Reasoning); err != nil {
 			fmt.Fprintf(os.Stderr, "\nError launching: %v\n", err)
 			fmt.Println("Press Enter to return to aimux...")
 			fmt.Scanln()
@@ -297,7 +298,7 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 			fmt.Fprintln(os.Stderr, "  aimux run opencode --fast")
 			os.Exit(1)
 		}
-		if err := daemon.RunCLI(db, args[1], "", ""); err != nil {
+		if err := daemon.RunCLI(db, args[1], "", "", ""); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
