@@ -268,6 +268,9 @@ type model struct {
 	diffViewport viewport.Model // scrollable viewport for the dry-run diff
 	diffContent  string         // rendered diff text set into the viewport
 
+	// Provider list viewport — scrolls when providers overflow terminal
+	providerViewport viewport.Model
+
 	// ponytail: updateInfo removed — unused. Re-add when update notification is implemented.
 
 	version string // semver without "v" prefix, set at startup from main
@@ -287,15 +290,20 @@ func NewModel(providerUseCases *application.ProviderUseCases, switchUseCases *ap
 	// ponytail: no custom keymap for viewport — parent routes ↑/k ↓/j directly.
 	vp.Style = aimuxT.Viewport
 
+	pv := viewport.New(0, 0)
+	// ponytail: no custom keymap — parent routes scroll keys directly.
+	pv.Style = aimuxT.Viewport
+
 	return &model{
-		providerUseCases: providerUseCases,
-		switchUseCases:   switchUseCases,
-		version:          version,
-		currentView:      dashboardView,
-		menuSelected:     menuItemManageProviders,
-		spinner:          s,
-		help:             h,
-		diffViewport:     vp,
+		providerUseCases:  providerUseCases,
+		switchUseCases:    switchUseCases,
+		version:           version,
+		currentView:       dashboardView,
+		menuSelected:      menuItemManageProviders,
+		spinner:           s,
+		help:              h,
+		diffViewport:      vp,
+		providerViewport:  pv,
 	}
 }
 
@@ -398,6 +406,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Resize the active form (huh) with new body dimensions
 		if m.form != nil {
 			m.setForm(m.form)
+		}
+
+		// Resize the provider viewport dimensions without resetting scroll position
+		if m.currentView == providerListView {
+			l := m.computeLayout()
+			if m.width > 4 && l.bodyH > 0 {
+				m.providerViewport.Width = m.width - 4
+				m.providerViewport.Height = l.bodyH
+			}
 		}
 
 		// Resize the diff viewport (switch confirmation with dry-run)
@@ -684,6 +701,11 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case providerListView:
 		switch {
+		case msg.Type == tea.KeyPgUp || msg.Type == tea.KeyPgDown ||
+			msg.Type == tea.KeyHome || msg.Type == tea.KeyEnd:
+			var cmd tea.Cmd
+			m.providerViewport, cmd = m.providerViewport.Update(msg)
+			return m, cmd
 		case key.Matches(msg, menuKeys.Enter):
 			if m.selectedProviderID > 0 && len(m.providers) > 0 {
 				m.switchProviderID = m.selectedProviderID
@@ -746,8 +768,12 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.currentView = dashboardView
 		case key.Matches(msg, menuKeys.Up):
 			m.selectedProviderID = m.prevProviderID(m.selectedProviderID)
+			m.syncProviderViewport()
+			m.scrollProviderToSelected()
 		case key.Matches(msg, menuKeys.Down):
 			m.selectedProviderID = m.nextProviderID(m.selectedProviderID)
+			m.syncProviderViewport()
+			m.scrollProviderToSelected()
 		}
 
 	case switchManageBindingsView:
@@ -1769,15 +1795,15 @@ func (m *model) renderDashboardSummary() string {
 }
 
 // isCenteredView returns true if the current view should use centered layout mode.
-// Most views use centered layout for consistent aesthetics. Only diff views use
-// full-width fluid layout to accommodate side-by-side panels.
+// Most views use centered layout for consistent aesthetics. Diff and scrollable
+// list views use full-width fluid layout.
 func (m *model) isCenteredView() bool {
 	switch m.currentView {
 	case switchConfirmationView:
-		// Diff view needs full-width for side-by-side panels
-		return false
+		return false // diff needs full-width
+	case providerListView:
+		return false // scrollable list needs full-width
 	default:
-		// All other views use centered layout
 		return true
 	}
 }
@@ -1878,7 +1904,7 @@ func (m *model) renderBodyContent() string {
 		return content
 
 	case providerListView:
-		return RenderProviderList(m.providers, m.selectedProviderID, m.width, m.allModels, m.activeMultiplexes)
+		return m.providerViewport.View()
 
 	case switchManageBindingsView:
 		content := m.renderManageBindings()
@@ -2194,7 +2220,53 @@ func (m *model) refreshData() tea.Msg {
 		m.allModels = allModels
 	}
 
+	m.syncProviderViewport()
+
 	return DashboardRefreshMsg{}
+}
+
+// syncProviderViewport re-renders the provider list into the provider viewport
+// and resizes it to fill the body height. No-op until terminal dimensions are known.
+func (m *model) syncProviderViewport() {
+	if m.width == 0 || m.height == 0 {
+		return
+	}
+	layout := m.computeLayout()
+	content := RenderProviderList(m.providers, m.selectedProviderID, m.width, m.allModels, m.activeMultiplexes)
+	m.providerViewport.Width = m.width - 4
+	m.providerViewport.Height = layout.bodyH
+	m.providerViewport.SetContent(content)
+}
+
+// scrollProviderToSelected scrolls the provider viewport so the selected card
+// is roughly visible. Each card is ~7 lines (border + content + gap).
+func (m *model) scrollProviderToSelected() {
+	if m.width == 0 || len(m.providers) == 0 || m.selectedProviderID == 0 {
+		return
+	}
+	idx := -1
+	for i, p := range m.providers {
+		if p.ID == m.selectedProviderID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return
+	}
+	// ponytail: assumes ~7 lines per card; close enough to keep selection visible.
+	y := idx * 7
+	h := m.providerViewport.Height
+	if y >= h {
+		// Scroll so selected is ~1/3 from top, giving context above
+		target := y - h/3
+		if target < 0 {
+			target = 0
+		}
+		m.providerViewport.SetYOffset(target)
+	} else {
+		m.providerViewport.SetYOffset(0)
+	}
 }
 
 func (m *model) previousView() viewType {
