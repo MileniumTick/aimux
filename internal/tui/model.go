@@ -28,14 +28,16 @@ const (
 	switchStepCLI          = 1
 	switchStepProvider     = 2
 	switchStepMapModels    = 3
-	switchStepReviewConfig = 4
-	switchStepConfirm      = 5
+	switchStepReasoning    = 4
+	switchStepReviewConfig = 5
+	switchStepConfirm      = 6
 )
 
 var switchStepLabels = map[int]string{
 	switchStepCLI:          "Select Target CLI",
 	switchStepProvider:     "Select Provider",
 	switchStepMapModels:    "Map Models to Env Vars",
+	switchStepReasoning:    "Set Reasoning Level",
 	switchStepReviewConfig: "Review Configuration",
 	switchStepConfirm:      "Confirm & Apply",
 }
@@ -69,6 +71,8 @@ const (
 	switchAdvancedConfigView
 	launchCLIView
 	launchModelView
+	launchReasoningView
+	switchReasoningView
 )
 
 // uiLayout holds the precomputed screen regions (A3).
@@ -223,6 +227,8 @@ type model struct {
 	switchDeleteConfirm        bool                     // true when confirming binding deletion
 	switchSelectedBindingIdx   int                      // selected binding index in manage view
 
+	switchReasoning string // reasoning level for switch flow
+
 	switchStep       int    // current stepper step (1-based, 0=hidden)
 	switchTotalSteps int    // total steps (0=hidden)
 	switchStepLabel  string // current step label
@@ -237,6 +243,7 @@ type model struct {
 	launchModelName        string              // single model override for launch
 	launchModelMappings    map[string]string   // env→model mappings for launch
 	launchRegisteredModels []string            // registered models for launch
+	launchReasoning        string              // reasoning level for launch
 
 	showHelp bool // when true, render help overlay instead of current view
 
@@ -1047,13 +1054,35 @@ func (m *model) launchShowModels() (tea.Model, tea.Cmd) {
 		form, extractFn := NewMapModelsForm(envVars, models)
 		m.switchExtractFn = extractFn
 		m.setForm(form)
+		m.currentView = launchModelView
 	} else {
 		// Multi-model CLI (pi, opencode): multi-select models
 		m.switchRegisterResult = RegisterModelsResult{}
 		m.setForm(NewSelectModelsForm(models, &m.switchRegisterResult))
+		m.currentView = launchModelView
 	}
+	return m, m.form.Init()
+}
 
-	m.currentView = launchModelView
+// launchShowReasoning shows a reasoning level selector after model selection.
+func (m *model) launchShowReasoning() (tea.Model, tea.Cmd) {
+	m.launchReasoning = "high"
+	m.setForm(huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Reasoning Level").
+				Description("Controls how much the model thinks before responding.").
+				Options(
+					huh.NewOption("Off", "off"),
+					huh.NewOption("Low", "low"),
+					huh.NewOption("Medium", "medium"),
+					huh.NewOption("High", "high"),
+					huh.NewOption("Max", "max"),
+				).
+				Value(&m.launchReasoning),
+		).Title("4. Reasoning"),
+	).WithTheme(HuhTheme()))
+	m.currentView = launchReasoningView
 	return m, m.form.Init()
 }
 
@@ -1076,9 +1105,10 @@ func (m *model) launchAgent() (tea.Model, tea.Cmd) {
 	}
 
 	req := map[string]string{
-		"cli":      m.launchCLIName,
-		"provider": m.getProviderName(m.launchProviderID),
-		"models":   modelData,
+		"cli":       m.launchCLIName,
+		"provider":  m.getProviderName(m.launchProviderID),
+		"models":    modelData,
+		"reasoning": m.launchReasoning,
 	}
 	launchPath := launchRequestPath()
 	if lp := launchPath; lp != "" {
@@ -1412,14 +1442,11 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		if _, err := m.switchUseCases.Apply(m.switchTargetCLIID, 0); err != nil {
 			log.Printf("config regenerate after model selection failed: %v", err)
 		}
-		if m.switchInManageMode {
-			// After edit/add in manage mode → show dry run with preview
-			return m.proceedToDryRun()
-		}
-		// Use SwitchToViewMsg to prevent Enter key bounce from the completed form
-		return m, func() tea.Msg {
-			return SwitchToViewMsg{View: switchAdvancedConfigView}
-		}
+		// Go to reasoning step
+		m.switchReasoning = ""
+		m.currentView = switchReasoningView
+		m.setForm(newReasoningForm(&m.switchReasoning))
+		return m, m.form.Init()
 
 	case switchMapModelsView:
 		m.form = nil
@@ -1443,6 +1470,40 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		m.switchRegisteredModels = registered
 
 		m.switchModelMetadataSummary = buildMetadataSummary(registered, m.switchProviderID, m.switchUseCases)
+		// Go to reasoning step
+		m.switchReasoning = ""
+		m.currentView = switchReasoningView
+		m.setForm(newReasoningForm(&m.switchReasoning))
+		return m, m.form.Init()
+
+	case switchReasoningView:
+		m.form = nil
+		// Inject reasoning into mutator config via extra_env
+		if m.switchReasoning != "" {
+			cli, err := m.switchUseCases.FindCLIByName(m.getCLIName(m.switchTargetCLIID))
+			if err == nil && cli.Mutator == "claude-settings-json" {
+				var mc map[string]any
+				if cli.MutatorConfig != "" && cli.MutatorConfig != "{}" {
+					json.Unmarshal([]byte(cli.MutatorConfig), &mc)
+				} else {
+					mc = make(map[string]any)
+				}
+				extra, _ := mc["extra_env"].(map[string]any)
+				if extra == nil {
+					extra = make(map[string]any)
+				}
+				extra["CLAUDE_CODE_EFFORT_LEVEL"] = m.switchReasoning
+				extra["extra_env_disabled"] = false
+				mc["extra_env"] = extra
+				if data, err := json.Marshal(mc); err == nil {
+					dataStr := string(data)
+					m.switchUseCases.UpdateCLIConfig(m.switchTargetCLIID, cli.ConfigPath, dataStr, "")
+				}
+			}
+		}
+		if m.switchInManageMode {
+			return m.proceedToDryRun()
+		}
 		return m, func() tea.Msg {
 			return SwitchToViewMsg{View: switchAdvancedConfigView}
 		}
@@ -1579,6 +1640,10 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		return m.launchShowModels()
 
 	case launchModelView:
+		m.form = nil
+		return m.launchShowReasoning()
+
+	case launchReasoningView:
 		m.form = nil
 		return m.launchAgent()
 	}
@@ -1837,6 +1902,8 @@ func (m *model) renderHeader() string {
 		if m.switchStepLabel != "" {
 			title += "  ·  " + m.switchStepLabel
 		}
+	case switchReasoningView:
+		title += "  ·  Switch  ·  Reasoning"
 	case manageCLIView, editCLIPathView:
 		title += "  ·  Manage CLIs"
 	case restoreCLIView, restoreBackupView:
@@ -1845,6 +1912,8 @@ func (m *model) renderHeader() string {
 		title += "  ·  Launch"
 	case launchModelView:
 		title += "  ·  Launch · Select Model"
+	case launchReasoningView:
+		title += "  ·  Launch · Reasoning"
 	}
 
 	// logo + breadcrumb, padded
@@ -2107,6 +2176,11 @@ func (m *model) previousView() viewType {
 		return switchProviderView
 	case switchRegisterModelsView:
 		return switchMapModelsView
+	case switchReasoningView:
+		if m.switchUsesEnvMapping {
+			return switchMapModelsView
+		}
+		return switchSelectModelsView
 	case switchProviderView:
 		if m.switchRemoveMode {
 			return switchManageBindingsView
@@ -2127,7 +2201,7 @@ func (m *model) previousView() viewType {
 		return dashboardView
 	case restoreBackupView:
 		return restoreCLIView
-	case launchCLIView, launchModelView:
+	case launchCLIView, launchModelView, launchReasoningView:
 		return dashboardView
 	default:
 		return dashboardView
@@ -2138,6 +2212,15 @@ func (m *model) getProviderName(id int64) string {
 	for _, p := range m.providers {
 		if p.ID == id {
 			return p.Name
+		}
+	}
+	return "Unknown"
+}
+
+func (m *model) getCLIName(id int64) string {
+	for _, c := range m.targetCLIs {
+		if c.ID == id {
+			return c.Name
 		}
 	}
 	return "Unknown"
@@ -2554,27 +2637,31 @@ func (m *model) syncSwitchStep() {
 	switch m.currentView {
 	case switchTargetCLIView:
 		m.switchStep = switchStepCLI
-		m.switchTotalSteps = 5
+		m.switchTotalSteps = 6
 		m.switchStepLabel = switchStepLabels[switchStepCLI]
 	case switchProviderView:
 		m.switchStep = switchStepProvider
-		m.switchTotalSteps = 5
+		m.switchTotalSteps = 6
 		m.switchStepLabel = switchStepLabels[switchStepProvider]
 	case switchMapModelsView:
 		m.switchStep = switchStepMapModels
-		m.switchTotalSteps = 5
+		m.switchTotalSteps = 6
 		m.switchStepLabel = switchStepLabels[switchStepMapModels]
 	case switchSelectModelsView:
 		m.switchStep = switchStepMapModels
-		m.switchTotalSteps = 5
+		m.switchTotalSteps = 6
 		m.switchStepLabel = "Select Models"
+	case switchReasoningView:
+		m.switchStep = switchStepReasoning
+		m.switchTotalSteps = 6
+		m.switchStepLabel = switchStepLabels[switchStepReasoning]
 	case switchAdvancedConfigView:
 		m.switchStep = switchStepReviewConfig
-		m.switchTotalSteps = 5
+		m.switchTotalSteps = 6
 		m.switchStepLabel = switchStepLabels[switchStepReviewConfig]
 	case switchConfirmationView:
 		m.switchStep = switchStepConfirm
-		m.switchTotalSteps = 5
+		m.switchTotalSteps = 6
 		m.switchStepLabel = switchStepLabels[switchStepConfirm]
 	case switchManageBindingsView:
 		m.switchStep = 0

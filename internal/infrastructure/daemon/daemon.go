@@ -400,7 +400,8 @@ func ResolveBinary(db *sql.DB, cliName string) (string, error) {
 // RunCLI resolves credentials for a CLI and launches its binary.
 // If providerName is set, uses that provider instead of the bound one.
 // models is JSON: either {"ENV_VAR":"model",...} (env mapping) or ["model1","model2",...] (registered).
-func RunCLI(db *sql.DB, cliName, providerName, models string) error {
+// reasoning is the reasoning level: "off", "low", "medium", "high", "max".
+func RunCLI(db *sql.DB, cliName, providerName, models, reasoning string) error {
 	cliRepo := &sqlite.TargetCLIRepository{DB: db}
 	providerRepo := &sqlite.ProviderRepository{DB: db}
 	multiplexRepo := &sqlite.MultiplexRepository{DB: db}
@@ -584,6 +585,18 @@ func RunCLI(db *sql.DB, cliName, providerName, models string) error {
 		if len(modelMeta) > 0 {
 			mutatorCfg["_model_metadata"] = modelMeta
 		}
+	}
+
+	// ── Inject reasoning level ──────────────────────────────────────
+	if reasoning != "" && cli.Mutator == "claude-settings-json" {
+		mutatorCfg["_reasoning_level"] = reasoning
+		mutatorCfg["extra_env_disabled"] = false
+		extra := make(map[string]any)
+		if e, ok := mutatorCfg["extra_env"].(map[string]any); ok {
+			extra = e
+		}
+		extra["CLAUDE_CODE_EFFORT_LEVEL"] = reasoning
+		mutatorCfg["extra_env"] = extra
 	}
 
 	result, err := resolveEnvVars(cliName, provider, mappings, mutatorCfg)
