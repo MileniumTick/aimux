@@ -23,17 +23,10 @@ builds:
       - -X main.version={{.Version}}
 
 archives:
-  - format: tar.gz
-    name_template: >-
-      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
-    files:
-      - README.md
-    # darwin and linux use tar.gz (default)
-    # windows uses zip
-  - id: windows-archives
-    format: zip
-    goos:
-      - windows
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
     files:
@@ -45,7 +38,7 @@ checksum:
 release:
   disable: true
 
-brews:
+homebrew_casks:
   - name: aimux
     repository:
       owner: MileniumTick
@@ -54,9 +47,6 @@ brews:
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     homepage: "https://github.com/MileniumTick/aimux"
     description: "AI Provider Multiplexer for dev CLIs"
-    license: "MIT"
-    url_template: >-
-      https://github.com/MileniumTick/aimux/releases/download/{{ .Tag }}/{{ .ArtifactName }}
-    directory: Formula
-    test: |
-      system "#{bin}/aimux version"
+    url:
+      template: "https://github.com/MileniumTick/aimux/releases/download/\
+        {{ .Tag }}/{{ .ArtifactName }}"
