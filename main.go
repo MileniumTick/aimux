@@ -101,8 +101,10 @@ func setupDB() (db *sql.DB, cleanup func(), err error) {
 		sqlite2.MigrationMultiProvider,
 		sqlite2.MigrationRemoveOpenCodeNpm,
 		sqlite2.MigrationAddDefaultContextWindow,
+		sqlite2.MigrationAddLogoURL,
 		sqlite2.CreateIndexes,
 		sqlite2.SeedTargetCLIs,
+		sqlite2.SeedDefaultProviders,
 	} {
 		if err := step(db); err != nil {
 			db.Close()

@@ -264,6 +264,22 @@ func MigrationCopilotShellProfile(db *sql.DB) error {
 	return nil
 }
 
+// MigrationAddLogoURL adds the logo_url column to providers.
+// Idempotent: checks if column exists before altering.
+func MigrationAddLogoURL(db *sql.DB) error {
+	exists, err := columnExists(db, "providers", "logo_url")
+	if err != nil {
+		return fmt.Errorf("check logo_url column: %w", err)
+	}
+	if exists {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE providers ADD COLUMN logo_url TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add logo_url column migration: %w", err)
+	}
+	return nil
+}
+
 // CreateIndexes creates indexes if they do not exist.
 func CreateIndexes(db *sql.DB) error {
 	statements := []string{
@@ -279,6 +295,54 @@ func CreateIndexes(db *sql.DB) error {
 
 // SeedTargetCLIs inserts the default target CLI rows.
 // Idempotent via INSERT OR IGNORE.
+// SeedDefaultProviders inserts curated default providers from models.dev catalog.
+// Idempotent via INSERT OR IGNORE on provider name. Providers without an entry in
+// models.dev use well-known public endpoints. Logo URLs are from models.dev/logos.
+func SeedDefaultProviders(db *sql.DB) error {
+	stmt := `INSERT OR IGNORE INTO providers (name, base_url, logo_url, status)
+		VALUES (?, ?, ?, 'active')`
+
+	type seedProvider struct {
+		name, baseURL, logoURL string
+	}
+
+	// Curated from https://models.dev/api.json — major API providers + popular resellers.
+	// ponytail: covers the most common destinations; add more on demand.
+	seeds := []seedProvider{
+		{"OpenAI", "https://api.openai.com", "https://models.dev/logos/openai.svg"},
+		{"Anthropic", "https://api.anthropic.com", "https://models.dev/logos/anthropic.svg"},
+		{"Google", "https://generativelanguage.googleapis.com", "https://models.dev/logos/google.svg"},
+		{"DeepSeek", "https://api.deepseek.com", "https://models.dev/logos/deepseek.svg"},
+		{"xAI", "https://api.x.ai", "https://models.dev/logos/xai.svg"},
+		{"Mistral", "https://api.mistral.ai", "https://models.dev/logos/mistral.svg"},
+		{"Groq", "https://api.groq.com/openai/v1", "https://models.dev/logos/groq.svg"},
+		{"OpenRouter", "https://openrouter.ai/api/v1", "https://models.dev/logos/openrouter.svg"},
+		{"Perplexity", "https://api.perplexity.ai", "https://models.dev/logos/perplexity.svg"},
+		{"Together AI", "https://api.together.xyz/v1", "https://models.dev/logos/togetherai.svg"},
+		{"Cerebras", "https://api.cerebras.ai/v1", "https://models.dev/logos/cerebras.svg"},
+		{"Deep Infra", "https://api.deepinfra.com/v1/openai", "https://models.dev/logos/deepinfra.svg"},
+		{"Fireworks AI", "https://api.fireworks.ai/inference/v1", "https://models.dev/logos/fireworks-ai.svg"},
+		{"Cohere", "https://api.cohere.ai", "https://models.dev/logos/cohere.svg"},
+		{"Azure", "", "https://models.dev/logos/azure.svg"},
+		{"GitHub Models", "https://models.github.ai/inference", "https://models.dev/logos/github-models.svg"},
+		{"Hugging Face", "https://router.huggingface.co/v1", "https://models.dev/logos/huggingface.svg"},
+		{"Requesty", "https://router.requesty.ai/v1", "https://models.dev/logos/requesty.svg"},
+		{"Zhipu AI", "https://open.bigmodel.cn/api/paas/v4", "https://models.dev/logos/zhipuai.svg"},
+		{"SiliconFlow", "https://api.siliconflow.com/v1", "https://models.dev/logos/siliconflow.svg"},
+		{"Alibaba", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "https://models.dev/logos/alibaba.svg"},
+		{"Novita AI", "https://api.novita.ai/openai", "https://models.dev/logos/novita-ai.svg"},
+		{"NVIDIA", "https://integrate.api.nvidia.com/v1", "https://models.dev/logos/nvidia.svg"},
+		{"Venice AI", "https://api.venice.ai/api/v1", "https://models.dev/logos/venice.svg"},
+	}
+
+	for _, s := range seeds {
+		if _, err := db.Exec(stmt, s.name, s.baseURL, s.logoURL); err != nil {
+			return fmt.Errorf("seed default provider '%s': %w", s.name, err)
+		}
+	}
+	return nil
+}
+
 func SeedTargetCLIs(db *sql.DB) error {
 	stmt := `INSERT OR IGNORE INTO target_clis (name, config_path, env_vars, mutator, mutator_config)
 		VALUES (?, ?, ?, ?, ?)`

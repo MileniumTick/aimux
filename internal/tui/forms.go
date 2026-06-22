@@ -20,6 +20,7 @@ type AddProviderResult struct {
 	DefaultContextWindow    int64  // parsed value
 	APIKey                  string
 	AuthToken               string
+	CustomModels            string // comma-separated fallback model IDs
 }
 
 // NewAddProviderForm creates a form for adding a new provider.
@@ -81,6 +82,11 @@ func NewAddProviderForm(result *AddProviderResult) *huh.Form {
 				Description("Fallback for models without metadata. 0 = not set.").
 				Placeholder("1000000").
 				Value(&result.DefaultContextWindowStr),
+			huh.NewInput().
+				Title("Custom Models (fallback)").
+				Description("Model IDs when API fetch fails. Comma-separated.").
+				Placeholder("my-fallback-model,other-model").
+				Value(&result.CustomModels),
 		).Title("Advanced"),
 	).WithTheme(HuhTheme())
 }
@@ -552,5 +558,24 @@ func newReasoningForm(result *string) *huh.Form {
 				).
 				Value(result),
 		).Title("Reasoning"),
+	).WithTheme(HuhTheme())
+}
+
+// ManageModelsResult holds the submitted custom model IDs for a provider.
+type ManageModelsResult struct {
+	CustomModels string
+}
+
+// NewManageModelsForm creates a simple form to add custom fallback model IDs
+// to an existing provider. Comma-separated values.
+func NewManageModelsForm(providerName string, result *ManageModelsResult) *huh.Form {
+	return huh.NewForm(
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Add Custom Models").
+				Description(fmt.Sprintf("Fallback model IDs for '%s'. Comma-separated.", providerName)).
+				Placeholder("my-custom-model,other-model").
+				Value(&result.CustomModels),
+		),
 	).WithTheme(HuhTheme())
 }

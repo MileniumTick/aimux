@@ -7,6 +7,7 @@ type Provider struct {
 	BaseURL              string
 	DiscoveryURL         string // optional, separate URL for model discovery; empty = use BaseURL
 	DefaultContextWindow int64  // fallback context window when API/catalog don't provide it; 0 = not set
+	LogoURL              string // URL to provider logo, e.g. https://models.dev/logos/anthropic.svg
 	APIKey               string
 	AuthToken            string
 	Status               string
@@ -64,6 +65,7 @@ type ProviderRepository interface {
 	UpdateStatus(id int64, status string) error
 	Delete(id int64) error
 	InsertModels(providerID int64, modelNames []string) error
+	AddCustomModels(providerID int64, modelNames []string) error
 	DeleteModelsByProvider(providerID int64) error
 	ListModels(providerID int64) ([]ProviderModel, error)
 	ListAllModels() ([]ProviderModel, error)
