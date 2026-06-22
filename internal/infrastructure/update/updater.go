@@ -2,6 +2,7 @@ package update
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"crypto/rand"
 	"crypto/sha256"
@@ -44,8 +45,12 @@ func SelfUpdate(currentVersion, execPath string) error {
 		return nil
 	}
 
-	// Step 4: build archive name
-	archiveName := fmt.Sprintf("aimux_%s_%s_%s.tar.gz", latestVersion, runtime.GOOS, runtime.GOARCH)
+	// Step 4: build archive name (zip for Windows, tar.gz for everything else)
+	archiveExt := ".tar.gz"
+	if runtime.GOOS == "windows" {
+		archiveExt = ".zip"
+	}
+	archiveName := fmt.Sprintf("aimux_%s_%s_%s%s", latestVersion, runtime.GOOS, runtime.GOARCH, archiveExt)
 
 	// Step 5: find matching asset
 	var downloadURL string
@@ -60,7 +65,11 @@ func SelfUpdate(currentVersion, execPath string) error {
 	}
 
 	// Step 6: download archive to temp file
-	tmpFile, err := os.CreateTemp(filepath.Dir(execPath), "aimux_download_*.tar.gz")
+	tmpPattern := "aimux_download_*.tar.gz"
+	if runtime.GOOS == "windows" {
+		tmpPattern = "aimux_download_*.zip"
+	}
+	tmpFile, err := os.CreateTemp(filepath.Dir(execPath), tmpPattern)
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}
@@ -236,8 +245,17 @@ func atomicReplace(verifiedPath, targetPath string) error {
 	return nil
 }
 
-// extractBinary extracts the binary from a gzipped tar archive.
+// extractBinary extracts the binary from a gzipped tar archive or zip archive.
+// Dispatches to extractTarGz or extractZip based on file extension.
 func extractBinary(archivePath, destPath string) error {
+	if strings.HasSuffix(archivePath, ".zip") {
+		return extractZip(archivePath, destPath)
+	}
+	return extractTarGz(archivePath, destPath)
+}
+
+// extractTarGz extracts the binary from a gzipped tar archive.
+func extractTarGz(archivePath, destPath string) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return err
@@ -275,6 +293,38 @@ func extractBinary(archivePath, destPath string) error {
 	}
 
 	return fmt.Errorf("binary not found in archive")
+}
+
+// extractZip extracts the binary from a zip archive.
+func extractZip(archivePath, destPath string) error {
+	r, err := zip.OpenReader(archivePath)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	for _, f := range r.File {
+		if f.Name == "aimux.exe" || f.Name == "aimux" {
+			rc, err := f.Open()
+			if err != nil {
+				return err
+			}
+			defer rc.Close()
+
+			out, err := os.OpenFile(destPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+			if err != nil {
+				return err
+			}
+			defer out.Close()
+
+			if _, err := io.Copy(out, rc); err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+
+	return fmt.Errorf("binary not found in zip archive")
 }
 
 // randomString generates a random alphanumeric string of the given length.

@@ -42,13 +42,23 @@ func ExpandTilde(path string) (string, error) {
 }
 
 // ResolveConfigDir returns the aimux config directory.
+// Uses os.UserConfigDir() which returns:
+//
+//	Unix:    ~/.config/aimux
+//	Windows: %APPDATA%/aimux (usually C:\Users\<user>\AppData\Roaming\aimux)
+//	macOS:   ~/Library/Application Support/aimux
 func ResolveConfigDir() (string, error) {
-	home, err := getHomeDir()
+	configDir, err := os.UserConfigDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
+		// Fallback: use home/.config
+		home, homeErr := getHomeDir()
+		if homeErr != nil {
+			return "", fmt.Errorf("resolve config directory: %w", err)
+		}
+		configDir = filepath.Join(home, ".config")
 	}
 
-	configDir := filepath.Join(home, ".config", "aimux")
+	configDir = filepath.Join(configDir, "aimux")
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return "", fmt.Errorf("create config directory: %w", err)
 	}
