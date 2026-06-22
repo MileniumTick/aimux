@@ -13,6 +13,7 @@ type Provider struct {
 	Status               string
 	CreatedAt            string
 	UpdatedAt            string
+	CustomModels         string // comma-separated fallback model IDs, for form pre-fill
 }
 
 // ProviderModel represents a model row associated with a provider.

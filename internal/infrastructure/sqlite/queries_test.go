@@ -44,6 +44,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 	if err := MigrationAddLogoURL(db); err != nil {
 		t.Fatalf("failed to add logo_url: %v", err)
 	}
+	if err := MigrationAddCustomModelsColumn(db); err != nil {
+		t.Fatalf("failed to add custom_models column: %v", err)
+	}
 	if err := CreateIndexes(db); err != nil {
 		t.Fatalf("failed to create indexes: %v", err)
 	}

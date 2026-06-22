@@ -37,7 +37,7 @@ func TestMenuItemCount(t *testing.T) {
 }
 
 func TestRenderProviderList_Empty(t *testing.T) {
-	result := RenderProviderList(nil, 0, 0, nil, nil)
+	result := RenderProviderList(nil, 0, 0, nil, nil, false, nil)
 	if !strings.Contains(result, "No providers configured") {
 		t.Error("expected empty state message")
 	}
@@ -49,7 +49,7 @@ func TestRenderProviderList_WithProviders(t *testing.T) {
 		{ID: 2, Name: "Provider B", BaseURL: "https://b.test", Status: "error"},
 	}
 
-	result := RenderProviderList(providers, 1, 0, nil, nil)
+	result := RenderProviderList(providers, 1, 0, nil, nil, false, nil)
 	if !strings.Contains(result, "Provider A") {
 		t.Error("expected 'Provider A' in list")
 	}
@@ -61,6 +61,21 @@ func TestRenderProviderList_WithProviders(t *testing.T) {
 	}
 	if !strings.Contains(result, "ERROR") {
 		t.Error("expected 'ERROR' status marker")
+	}
+}
+
+func TestRenderProviderList_MultiSelect(t *testing.T) {
+	providers := []domain.Provider{
+		{ID: 1, Name: "Provider A", BaseURL: "https://a.test"},
+		{ID: 2, Name: "Provider B", BaseURL: "https://b.test"},
+	}
+	selected := map[int64]bool{1: true}
+	result := RenderProviderList(providers, 1, 0, nil, nil, true, selected)
+	if !strings.Contains(result, "[x]") {
+		t.Error("expected checked [x] for selected provider in multi-select mode")
+	}
+	if !strings.Contains(result, "[ ]") {
+		t.Error("expected unchecked [ ] for unselected provider in multi-select mode")
 	}
 }
 

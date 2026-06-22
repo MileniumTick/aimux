@@ -11,12 +11,17 @@ import (
 // RenderProviderList renders the provider management list with card-based styling.
 // Each provider is displayed as a bordered card with status badge, URL, model count,
 // and a logo indicator when a logo URL is available.
-func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth int, allModels []domain.ProviderModel, activeMultiplexes []domain.ActiveMultiplex) string {
-	if len(providers) == 0 {
+// deleteMode and deleteSet enable multi-select toggling for bulk delete.
+func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth int, allModels []domain.ProviderModel, activeMultiplexes []domain.ActiveMultiplex, deleteMode bool, deleteSet map[int64]bool) string {
+	if len(providers) == 0 && !deleteMode && deleteSet == nil {
+		msg := "No providers configured. Press 'a' to add one."
+		if deleteMode {
+			msg = "No providers match your search."
+		}
 		empty := lipgloss.NewStyle().
 			Foreground(aimuxT.TextMuted).
 			Padding(1, 2).
-			Render("No providers configured. Press 'a' to add one.")
+			Render(msg)
 		return aimuxT.Card.Copy().Width(termWidth - 8).Render(empty)
 	}
 
@@ -52,6 +57,16 @@ func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth
 	for _, p := range providers {
 		selected := p.ID == selectedID
 
+		// Multi-select checkbox
+		var checkBox string
+		if deleteMode {
+			if deleteSet[p.ID] {
+				checkBox = lipgloss.NewStyle().Foreground(aimuxT.Accent).Bold(true).Render("[x] ")
+			} else {
+				checkBox = lipgloss.NewStyle().Foreground(aimuxT.TextMuted).Render("[ ] ")
+			}
+		}
+
 		// Status badge
 		var statusBadge string
 		if p.Status == "error" {
@@ -74,9 +89,11 @@ func RenderProviderList(providers []domain.Provider, selectedID int64, termWidth
 				Render("● in use")
 		}
 
-		// Selection indicator
+		// Selection indicator (arrow for normal mode, checkbox in multi-select)
 		var selIndicator string
-		if selected {
+		if deleteMode {
+			selIndicator = checkBox
+		} else if selected {
 			selIndicator = lipgloss.NewStyle().
 				Foreground(aimuxT.Accent).
 				Bold(true).

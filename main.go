@@ -102,6 +102,7 @@ func setupDB() (db *sql.DB, cleanup func(), err error) {
 		sqlite2.MigrationRemoveOpenCodeNpm,
 		sqlite2.MigrationAddDefaultContextWindow,
 		sqlite2.MigrationAddLogoURL,
+		sqlite2.MigrationAddCustomModelsColumn,
 		sqlite2.CreateIndexes,
 		sqlite2.SeedTargetCLIs,
 		sqlite2.SeedDefaultProviders,
