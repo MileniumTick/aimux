@@ -913,8 +913,11 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.switchRemoveMode = false
 			m.switchInManageMode = false
 			m.switchCLIBindings = nil
-			m.currentView = dashboardView
-			return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
+			m.currentView = switchTargetCLIView
+			m.switchTargetCLIID = 0
+			m.setForm(NewSelectTargetCLIForm(m.targetCLIs, &m.switchTargetCLIID))
+			m.form.WithHeight(10)
+			return m, m.form.Init()
 		}
 
 	case switchProviderView:
@@ -1584,25 +1587,14 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 	case switchTargetCLIView:
 		m.form = nil
 
-		// Check if this CLI uses env mapping (Claude Code, Codex).
-		// Env-mapping CLIs always go to provider selection (replacing any existing).
-		// pi/OpenCode/Copilot go to manage view when they already have bindings.
-		usesEnv := false
-		for _, c := range m.targetCLIs {
-			if c.ID == m.switchTargetCLIID {
-				usesEnv = c.Mutator == "claude-settings-json" || c.Mutator == "codex-config-toml"
-				break
-			}
+		// All CLIs go to manage bindings view if they already have bindings.
+		// This gives flow parity regardless of CLI type.
+		bindings, _ := m.switchUseCases.ListBindingsForCLI(m.switchTargetCLIID)
+		if len(bindings) > 0 {
+			return m.enterManageBindingsView()
 		}
 
-		if !usesEnv {
-			bindings, _ := m.switchUseCases.ListBindingsForCLI(m.switchTargetCLIID)
-			if len(bindings) > 0 {
-				return m.enterManageBindingsView()
-			}
-		}
-
-		// Go straight to provider selection — rich card list, no form
+		// No existing bindings — go straight to provider selection
 		m.switchInManageMode = false
 		providers, err := m.providerUseCases.List()
 		if err != nil || len(providers) == 0 {
@@ -2101,24 +2093,7 @@ func (m *model) renderBodyContent() string {
 
 	case switchProviderView:
 		m.syncSwitchProviderViewport()
-		content := m.providerViewport.View()
-		if m.searchActive || m.providerSearch != "" {
-			var parts []string
-			if m.searchActive {
-				searchPrompt := lipgloss.NewStyle().Foreground(aimuxT.Accent).Bold(true).Render("/")
-				searchText := lipgloss.NewStyle().Foreground(aimuxT.TextPrimary).Render(m.providerSearch)
-				cursor := lipgloss.NewStyle().Foreground(aimuxT.Accent).Render("\u2588")
-				parts = append(parts, searchPrompt+searchText+cursor)
-			} else if m.providerSearch != "" {
-				searchLine := lipgloss.NewStyle().
-					Foreground(aimuxT.TextMuted).
-					Render(fmt.Sprintf("  /%s  (%d filtered)", m.providerSearch, len(m.filteredProviders())))
-				parts = append(parts, searchLine)
-			}
-			parts = append(parts, content)
-			return lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), strings.Join(parts, "\n"))
-		}
-		return lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), content)
+		return lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), m.providerViewport.View())
 
 	case switchManageBindingsView:
 		content := m.renderManageBindings()
@@ -2655,7 +2630,7 @@ func (m *model) previousView() viewType {
 	case deleteBindingConfirmView:
 		return switchManageBindingsView
 	case switchManageBindingsView:
-		return dashboardView
+		return switchTargetCLIView
 	case switchTargetCLIView, switchConfirmationView:
 		return dashboardView
 	case restoreCLIView:
@@ -3023,6 +2998,19 @@ func (m *model) renderSwitchProviderView() string {
 
 	header := aimuxT.CardTitle.Render("Select Provider for " + cliName)
 
+	// Search bar (shown when typing or active)
+	var parts []string
+	if m.searchActive {
+		searchPrompt := lipgloss.NewStyle().Foreground(aimuxT.Accent).Bold(true).Render("/")
+		searchText := lipgloss.NewStyle().Foreground(aimuxT.TextPrimary).Render(m.providerSearch)
+		cursor := lipgloss.NewStyle().Foreground(aimuxT.Accent).Render("\u2588")
+		parts = append(parts, searchPrompt+searchText+cursor)
+	} else if m.providerSearch != "" {
+		parts = append(parts, lipgloss.NewStyle().
+			Foreground(aimuxT.TextMuted).
+			Render(fmt.Sprintf("/%s  (%d filtered)", m.providerSearch, len(m.filteredProviders()))))
+	}
+
 	// When search is active, use the filtered subset
 	providers := m.providers
 	if m.searchActive || m.providerSearch != "" {
@@ -3030,14 +3018,12 @@ func (m *model) renderSwitchProviderView() string {
 	}
 
 	if len(providers) == 0 {
-		var empty string
+		emptyMsg := "No providers configured. Press 'a' to add one."
 		if m.searchActive || m.providerSearch != "" {
-			empty = aimuxT.Muted.Render("No providers match your search.")
-		} else {
-			empty = aimuxT.Muted.Render("No providers configured. Press 'a' to add one.")
+			emptyMsg = "No providers match your search."
 		}
-		cardBody := lipgloss.JoinVertical(lipgloss.Left, header, "", empty)
-		return aimuxT.Card.Copy().Width(m.width - 8).Render(cardBody)
+		parts = append(parts, aimuxT.Muted.Render(emptyMsg))
+		return strings.Join(parts, "\n")
 	}
 
 	modelCounts := make(map[int64]int)
@@ -3137,7 +3123,17 @@ func (m *model) renderSwitchProviderView() string {
 		cards = append(cards, cardStyle.Render(cardContent))
 	}
 
-	return lipgloss.JoinVertical(lipgloss.Left, header, "", strings.Join(cards, "\n"))
+	// Combine search bar + header + cards
+	if len(parts) > 0 {
+		parts = append(parts, "")
+		parts = append(parts, header)
+		parts = append(parts, "")
+	} else {
+		parts = append(parts, header)
+		parts = append(parts, "")
+	}
+	parts = append(parts, strings.Join(cards, "\n"))
+	return strings.Join(parts, "\n")
 }
 
 // proceedFromProviderSelection handles Enter on a provider in the switch flow.
