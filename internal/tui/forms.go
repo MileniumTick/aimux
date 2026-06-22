@@ -23,10 +23,10 @@ type AddProviderResult struct {
 }
 
 // NewAddProviderForm creates a form for adding a new provider.
-// Split into 3 paginated groups (A4): Identity, Endpoint, Credentials.
+// Split into 2 groups: Essentials (required) and Advanced (optional).
 func NewAddProviderForm(result *AddProviderResult) *huh.Form {
 	return huh.NewForm(
-		// Group 1: Identity
+		// Group 1: Essentials — required fields
 		huh.NewGroup(
 			huh.NewInput().
 				Title("Name").
@@ -38,10 +38,6 @@ func NewAddProviderForm(result *AddProviderResult) *huh.Form {
 					}
 					return nil
 				}),
-		).Title("Identity"),
-
-		// Group 2: Endpoint
-		huh.NewGroup(
 			huh.NewInput().
 				Title("Base URL").
 				Placeholder("https://api.openai.com/v1").
@@ -57,15 +53,6 @@ func NewAddProviderForm(result *AddProviderResult) *huh.Form {
 					return nil
 				}),
 			huh.NewInput().
-				Title("Discovery URL (optional)").
-				Description("Separate URL for model discovery. Leave empty to use Base URL.").
-				Placeholder("https://api.bifrost.local/v1").
-				Value(&result.DiscoveryURL),
-		).Title("Endpoint"),
-
-		// Group 3: Credentials
-		huh.NewGroup(
-			huh.NewInput().
 				Title("API Key").
 				Value(&result.APIKey).
 				EchoMode(huh.EchoModePassword).
@@ -75,6 +62,15 @@ func NewAddProviderForm(result *AddProviderResult) *huh.Form {
 					}
 					return nil
 				}),
+		).Title("Essentials"),
+
+		// Group 2: Advanced — optional fields
+		huh.NewGroup(
+			huh.NewInput().
+				Title("Discovery URL").
+				Description("Separate URL for model discovery. Leave empty to use Base URL.").
+				Placeholder("https://api.bifrost.local/v1").
+				Value(&result.DiscoveryURL),
 			huh.NewInput().
 				Title("Auth Token").
 				Description("Optional if same as API Key").
@@ -85,7 +81,7 @@ func NewAddProviderForm(result *AddProviderResult) *huh.Form {
 				Description("Fallback for models without metadata. 0 = not set.").
 				Placeholder("1000000").
 				Value(&result.DefaultContextWindowStr),
-		).Title("Credentials"),
+		).Title("Advanced"),
 	).WithTheme(HuhTheme())
 }
 
@@ -348,7 +344,7 @@ func NewEditCLIPathForm(cli *domain.TargetCLI, result *EditCLIPathResult) *huh.F
 	return huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
-				Title("Config Path for " + cli.Name).
+				Title("Config Path for "+cli.Name).
 				Placeholder("~/.config/claude/settings.json").
 				Value(&result.ConfigPath).
 				Validate(func(s string) error {
