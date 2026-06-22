@@ -215,8 +215,13 @@ type model struct {
 	deleteConfirm      bool
 	deleteMultiSelect  bool
 	deleteSelectedSet  map[int64]bool
-	providerSearch     string
-	searchActive       bool
+
+	// returnToSwitchProviderView redirects add/edit/delete forms back to
+	// switchProviderView instead of providerListView when triggered from the switch flow.
+	returnToSwitchProviderView bool
+
+	providerSearch string
+	searchActive   bool
 
 	switchTargetCLIID          int64
 	switchProviderID           int64
@@ -420,8 +425,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.currentView == providerListView {
 			l := m.computeLayout()
 			if m.width > 0 && l.bodyH > 0 {
+				overlay := m.providerViewportOverlay()
+				vh := l.bodyH - overlay
+				if vh < 3 {
+					vh = 3
+				}
 				m.providerViewport.Width = m.width
-				m.providerViewport.Height = l.bodyH
+				m.providerViewport.Height = vh
 			}
 		}
 
@@ -914,6 +924,17 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case switchProviderView:
 		switch {
+		case msg.Type == tea.KeyPgUp || msg.Type == tea.KeyPgDown ||
+			msg.Type == tea.KeyHome || msg.Type == tea.KeyEnd:
+			var cmd tea.Cmd
+			m.providerViewport, cmd = m.providerViewport.Update(msg)
+			return m, cmd
+		case key.Matches(msg, menuKeys.Add):
+			m.returnToSwitchProviderView = true
+			m.currentView = addProviderView
+			m.addProviderResult = AddProviderResult{}
+			m.setForm(NewAddProviderForm(&m.addProviderResult))
+			return m, m.form.Init()
 		case key.Matches(msg, menuKeys.Enter):
 			if m.switchProviderID == 0 && len(m.providers) > 0 {
 				m.switchProviderID = m.providers[0].ID
@@ -969,8 +990,10 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, menuKeys.Up):
 			m.switchProviderID = m.prevProviderID(m.switchProviderID)
+			m.scrollSwitchProviderToSelected()
 		case key.Matches(msg, menuKeys.Down):
 			m.switchProviderID = m.nextProviderID(m.switchProviderID)
+			m.scrollSwitchProviderToSelected()
 		case key.Matches(msg, menuKeys.Esc):
 			if m.switchRemoveMode || m.switchInManageMode {
 				m.switchRemoveMode = false
@@ -1404,7 +1427,12 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 	switch m.currentView {
 	case addProviderView:
 		m.form = nil
-		m.currentView = providerListView
+		if m.returnToSwitchProviderView {
+			m.returnToSwitchProviderView = false
+			m.currentView = switchProviderView
+		} else {
+			m.currentView = providerListView
+		}
 		name := strings.TrimSpace(m.addProviderResult.Name)
 		baseURL := strings.TrimSpace(m.addProviderResult.BaseURL)
 		discoveryURL := strings.TrimSpace(m.addProviderResult.DiscoveryURL)
@@ -1424,7 +1452,12 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 
 	case editProviderView:
 		m.form = nil
-		m.currentView = providerListView
+		if m.returnToSwitchProviderView {
+			m.returnToSwitchProviderView = false
+			m.currentView = switchProviderView
+		} else {
+			m.currentView = providerListView
+		}
 		baseURL := strings.TrimSpace(m.editProviderResult.BaseURL)
 		discoveryURL := strings.TrimSpace(m.editProviderResult.DiscoveryURL)
 		apiKey := strings.TrimSpace(m.editProviderResult.APIKey)
@@ -1477,7 +1510,12 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 
 	case deleteProviderView:
 		m.form = nil
-		m.currentView = providerListView
+		if m.returnToSwitchProviderView {
+			m.returnToSwitchProviderView = false
+			m.currentView = switchProviderView
+		} else {
+			m.currentView = providerListView
+		}
 		if m.deleteConfirm {
 			if m.deleteMultiSelect && len(m.deleteSelectedSet) > 0 {
 				// Bulk delete: delete all selected providers
@@ -1812,7 +1850,12 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 
 	case manageModelsView:
 		m.form = nil
-		m.currentView = providerListView
+		if m.returnToSwitchProviderView {
+			m.returnToSwitchProviderView = false
+			m.currentView = switchProviderView
+		} else {
+			m.currentView = providerListView
+		}
 		custom := m.manageModelsResult.CustomModels
 		if custom == "" {
 			return m, func() tea.Msg {
@@ -1919,11 +1962,11 @@ func (m *model) renderDashboardSummary() string {
 }
 
 // isCenteredView returns true if the current view should use centered layout mode.
-// Most views use centered layout. Only the confirmation diff view needs full-width fluid.
+// Most views use centered layout. Only the confirmation diff uses full-width.
 func (m *model) isCenteredView() bool {
 	switch m.currentView {
 	case switchConfirmationView:
-		return false // diff needs full-width
+		return false
 	default:
 		return true
 	}
@@ -2056,7 +2099,8 @@ func (m *model) renderBodyContent() string {
 		return content
 
 	case switchProviderView:
-		return m.renderSwitchProviderView()
+		m.syncSwitchProviderViewport()
+		return lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), m.providerViewport.View())
 
 	case switchManageBindingsView:
 		content := m.renderManageBindings()
@@ -2306,6 +2350,7 @@ func (m *model) contextualKeys() []navPair {
 		return []navPair{
 			{"↑/↓", "navigate"},
 			{"enter", "select"},
+			{"a", "add"},
 			{"e", "edit"},
 			{"d", "delete"},
 			{"r", "retry"},
@@ -2382,7 +2427,11 @@ func (m *model) refreshData() tea.Msg {
 		m.allModels = allModels
 	}
 
-	m.syncProviderViewport()
+	if m.currentView == switchProviderView {
+		m.syncSwitchProviderViewport()
+	} else {
+		m.syncProviderViewport()
+	}
 
 	return DashboardRefreshMsg{}
 }
@@ -2407,15 +2456,33 @@ func (m *model) filteredProviders() []domain.Provider {
 
 // syncProviderViewport re-renders the provider list into the provider viewport
 // and resizes it to fill the body height. No-op until terminal dimensions are known.
+// providerViewportOverlay returns how many lines the search bar / multi-select
+// indicator take above the viewport, so viewport height can be reduced accordingly.
+func (m *model) providerViewportOverlay() int {
+	n := 0
+	if m.searchActive || m.providerSearch != "" {
+		n++
+	}
+	if m.deleteMultiSelect {
+		n++
+	}
+	return n
+}
+
 func (m *model) syncProviderViewport() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
 	layout := m.computeLayout()
+	overlay := m.providerViewportOverlay()
+	vh := layout.bodyH - overlay
+	if vh < 3 {
+		vh = 3
+	}
 	providers := m.filteredProviders()
 	content := RenderProviderList(providers, m.selectedProviderID, m.width, m.allModels, m.activeMultiplexes, m.deleteMultiSelect, m.deleteSelectedSet)
 	m.providerViewport.Width = m.width
-	m.providerViewport.Height = layout.bodyH
+	m.providerViewport.Height = vh
 	m.providerViewport.SetContent(content)
 }
 
@@ -2450,9 +2517,53 @@ func (m *model) scrollProviderToSelected() {
 	}
 }
 
+// syncSwitchProviderViewport re-renders the switch provider card list into the provider viewport.
+func (m *model) syncSwitchProviderViewport() {
+	if m.width == 0 || m.height == 0 {
+		return
+	}
+	layout := m.computeLayout()
+	content := m.renderSwitchProviderView()
+	m.providerViewport.Width = m.width
+	m.providerViewport.Height = layout.bodyH
+	m.providerViewport.SetContent(content)
+}
+
+// scrollSwitchProviderToSelected scrolls the switch provider viewport so the selected
+// card is roughly visible. Same heuristic as scrollProviderToSelected.
+func (m *model) scrollSwitchProviderToSelected() {
+	if m.width == 0 || len(m.providers) == 0 || m.switchProviderID == 0 {
+		return
+	}
+	idx := -1
+	for i, p := range m.providers {
+		if p.ID == m.switchProviderID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return
+	}
+	y := idx * 7
+	h := m.providerViewport.Height
+	if y >= h {
+		target := y - h/3
+		if target < 0 {
+			target = 0
+		}
+		m.providerViewport.SetYOffset(target)
+	} else {
+		m.providerViewport.SetYOffset(0)
+	}
+}
+
 func (m *model) previousView() viewType {
 	switch m.currentView {
 	case addProviderView, deleteProviderView, editProviderView, manageModelsView:
+		if m.returnToSwitchProviderView {
+			return switchProviderView
+		}
 		return providerListView
 	case switchAdvancedConfigView:
 		if m.switchInManageMode {
@@ -2963,8 +3074,7 @@ func (m *model) renderSwitchProviderView() string {
 		cards = append(cards, cardStyle.Render(cardContent))
 	}
 
-	content := lipgloss.JoinVertical(lipgloss.Left, header, "", strings.Join(cards, "\n"))
-	return lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), content)
+	return lipgloss.JoinVertical(lipgloss.Left, header, "", strings.Join(cards, "\n"))
 }
 
 // proceedFromProviderSelection handles Enter on a provider in the switch flow.
