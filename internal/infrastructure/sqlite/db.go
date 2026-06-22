@@ -280,6 +280,23 @@ func MigrationAddLogoURL(db *sql.DB) error {
 	return nil
 }
 
+// MigrationAddCustomModelsColumn adds the custom_models column to providers.
+// Stores the raw comma-separated list for form pre-fill.
+// Idempotent: checks if column exists before altering.
+func MigrationAddCustomModelsColumn(db *sql.DB) error {
+	exists, err := columnExists(db, "providers", "custom_models")
+	if err != nil {
+		return fmt.Errorf("check custom_models column: %w", err)
+	}
+	if exists {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE providers ADD COLUMN custom_models TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add custom_models column migration: %w", err)
+	}
+	return nil
+}
+
 // CreateIndexes creates indexes if they do not exist.
 func CreateIndexes(db *sql.DB) error {
 	statements := []string{

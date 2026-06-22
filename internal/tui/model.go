@@ -151,6 +151,8 @@ type keyMap struct {
 	Edit         key.Binding
 	Help         key.Binding
 	CustomModels key.Binding
+	Search       key.Binding
+	SelectMode   key.Binding
 	Undo         key.Binding
 	Launch       key.Binding
 }
@@ -167,6 +169,8 @@ var menuKeys = keyMap{
 	Test:         key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "test")),
 	Edit:         key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit provider")),
 	CustomModels: key.NewBinding(key.WithKeys("c"), key.WithHelp("c", "custom models")),
+	Search:       key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "search providers")),
+	SelectMode:   key.NewBinding(key.WithKeys("x"), key.WithHelp("x", "toggle multi-select")),
 	Help:         key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 	Undo:         key.NewBinding(key.WithKeys("Z"), key.WithHelp("Z", "undo last apply")),
 	Launch:       key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "launch agent")),
@@ -209,6 +213,10 @@ type model struct {
 	addProviderResult  AddProviderResult
 	editProviderResult EditProviderResult
 	deleteConfirm      bool
+	deleteMultiSelect  bool
+	deleteSelectedSet  map[int64]bool
+	providerSearch     string
+	searchActive       bool
 
 	switchTargetCLIID          int64
 	switchProviderID           int64
@@ -295,15 +303,15 @@ func NewModel(providerUseCases *application.ProviderUseCases, switchUseCases *ap
 	pv.Style = aimuxT.Viewport
 
 	return &model{
-		providerUseCases:  providerUseCases,
-		switchUseCases:    switchUseCases,
-		version:           version,
-		currentView:       dashboardView,
-		menuSelected:      menuItemManageProviders,
-		spinner:           s,
-		help:              h,
-		diffViewport:      vp,
-		providerViewport:  pv,
+		providerUseCases: providerUseCases,
+		switchUseCases:   switchUseCases,
+		version:          version,
+		currentView:      dashboardView,
+		menuSelected:     menuItemManageProviders,
+		spinner:          s,
+		help:             h,
+		diffViewport:     vp,
+		providerViewport: pv,
 	}
 }
 
@@ -411,8 +419,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Resize the provider viewport dimensions without resetting scroll position
 		if m.currentView == providerListView {
 			l := m.computeLayout()
-			if m.width > 4 && l.bodyH > 0 {
-				m.providerViewport.Width = m.width - 4
+			if m.width > 0 && l.bodyH > 0 {
+				m.providerViewport.Width = m.width
 				m.providerViewport.Height = l.bodyH
 			}
 		}
@@ -700,14 +708,70 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case providerListView:
+		// Search mode: capture keystrokes directly to build search string
+		if m.searchActive {
+			switch {
+			case msg.Type == tea.KeyEsc:
+				m.searchActive = false
+				m.providerSearch = ""
+				m.syncProviderViewport()
+				return m, nil
+			case msg.Type == tea.KeyEnter:
+				m.searchActive = false
+				m.syncProviderViewport()
+				return m, nil
+			case msg.Type == tea.KeyBackspace:
+				if len(m.providerSearch) > 0 {
+					m.providerSearch = m.providerSearch[:len(m.providerSearch)-1]
+				}
+				m.syncProviderViewport()
+				return m, nil
+			case msg.Type == tea.KeyRunes:
+				m.providerSearch += string(msg.Runes)
+				m.syncProviderViewport()
+				return m, nil
+			}
+			// fall through for PgUp/PgDown etc
+		}
+
 		switch {
 		case msg.Type == tea.KeyPgUp || msg.Type == tea.KeyPgDown ||
 			msg.Type == tea.KeyHome || msg.Type == tea.KeyEnd:
 			var cmd tea.Cmd
 			m.providerViewport, cmd = m.providerViewport.Update(msg)
 			return m, cmd
+
+		// Multi-select: d deletes all selected (with confirm), space toggles
+		case m.deleteMultiSelect && key.Matches(msg, menuKeys.Delete):
+			if len(m.deleteSelectedSet) > 0 {
+				m.currentView = deleteProviderView
+				m.deleteConfirm = false
+				count := len(m.deleteSelectedSet)
+				m.setForm(NewDeleteConfirmForm(fmt.Sprintf("%d selected providers", count), &m.deleteConfirm))
+				return m, m.form.Init()
+			}
+			return m, nil
+		case m.deleteMultiSelect && key.Matches(msg, menuKeys.Enter):
+			// toggle selection for current provider
+			if m.selectedProviderID > 0 {
+				if m.deleteSelectedSet[m.selectedProviderID] {
+					delete(m.deleteSelectedSet, m.selectedProviderID)
+				} else {
+					m.deleteSelectedSet[m.selectedProviderID] = true
+				}
+			}
+			m.syncProviderViewport()
+			return m, nil
+
+		case m.deleteMultiSelect && key.Matches(msg, menuKeys.SelectMode):
+			// exit multi-select mode, clear selection
+			m.deleteMultiSelect = false
+			m.deleteSelectedSet = nil
+			m.syncProviderViewport()
+			return m, nil
+
 		case key.Matches(msg, menuKeys.Enter):
-			if m.selectedProviderID > 0 && len(m.providers) > 0 {
+			if !m.deleteMultiSelect && m.selectedProviderID > 0 && len(m.providers) > 0 {
 				m.switchProviderID = m.selectedProviderID
 				return m.startSwitchFlow()
 			}
@@ -717,7 +781,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.setForm(NewAddProviderForm(&m.addProviderResult))
 			return m, m.form.Init()
 		case key.Matches(msg, menuKeys.Delete):
-			if m.selectedProviderID > 0 {
+			if !m.deleteMultiSelect && m.selectedProviderID > 0 {
 				m.currentView = deleteProviderView
 				m.deleteConfirm = false
 				providerName := m.getProviderName(m.selectedProviderID)
@@ -747,7 +811,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				)
 			}
 		case key.Matches(msg, menuKeys.Edit):
-			if m.selectedProviderID > 0 {
+			if !m.deleteMultiSelect && m.selectedProviderID > 0 {
 				m.editProviderResult = EditProviderResult{}
 				provider := m.getProvider(m.selectedProviderID)
 				if provider != nil {
@@ -757,14 +821,35 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case key.Matches(msg, menuKeys.CustomModels):
-			if m.selectedProviderID > 0 {
+			if !m.deleteMultiSelect && m.selectedProviderID > 0 {
 				m.manageModelsResult = ManageModelsResult{}
 				providerName := m.getProviderName(m.selectedProviderID)
 				m.currentView = manageModelsView
 				m.setForm(NewManageModelsForm(providerName, &m.manageModelsResult))
 				return m, m.form.Init()
 			}
+		case key.Matches(msg, menuKeys.Search):
+			m.searchActive = true
+			m.providerSearch = ""
+			return m, nil
+		case key.Matches(msg, menuKeys.SelectMode):
+			m.deleteMultiSelect = !m.deleteMultiSelect
+			if m.deleteMultiSelect {
+				m.deleteSelectedSet = make(map[int64]bool)
+			} else {
+				m.deleteSelectedSet = nil
+			}
+			m.syncProviderViewport()
+			return m, nil
 		case key.Matches(msg, menuKeys.Esc), key.Matches(msg, menuKeys.Quit):
+			if m.searchActive {
+				m.searchActive = false
+				m.providerSearch = ""
+				m.syncProviderViewport()
+				return m, nil
+			}
+			m.deleteMultiSelect = false
+			m.deleteSelectedSet = nil
 			m.currentView = dashboardView
 		case key.Matches(msg, menuKeys.Up):
 			m.selectedProviderID = m.prevProviderID(m.selectedProviderID)
@@ -781,15 +866,15 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, menuKeys.Enter):
 			return m.editSelectedBinding()
 		case key.Matches(msg, menuKeys.Add):
-			m.currentView = switchProviderView
 			providers, _ := m.providerUseCases.List()
 			if len(providers) == 0 {
 				return m, func() tea.Msg {
 					return notificationMsg{message: "No providers available", isError: false, severity: "warn"}
 				}
 			}
-			m.setForm(NewSelectProviderForm(providers, &m.switchProviderID))
-			return m, m.form.Init()
+			m.switchProviderID = providers[0].ID
+			m.currentView = switchProviderView
+			return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
 		case key.Matches(msg, menuKeys.Edit):
 			return m.editSelectedBinding()
 		case key.Matches(msg, menuKeys.Delete):
@@ -825,6 +910,77 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.switchCLIBindings = nil
 			m.currentView = dashboardView
 			return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
+		}
+
+	case switchProviderView:
+		switch {
+		case key.Matches(msg, menuKeys.Enter):
+			if m.switchProviderID == 0 && len(m.providers) > 0 {
+				m.switchProviderID = m.providers[0].ID
+			}
+			return m.proceedFromProviderSelection()
+		case key.Matches(msg, menuKeys.Edit):
+			if m.switchProviderID > 0 {
+				m.editProviderResult = EditProviderResult{}
+				provider := m.getProvider(m.switchProviderID)
+				if provider != nil {
+					m.currentView = editProviderView
+					m.setForm(NewEditProviderForm(*provider, &m.editProviderResult))
+					return m, m.form.Init()
+				}
+			}
+		case key.Matches(msg, menuKeys.Delete):
+			if m.switchProviderID > 0 {
+				m.currentView = deleteProviderView
+				m.deleteConfirm = false
+				providerName := m.getProviderName(m.switchProviderID)
+				m.setForm(NewDeleteConfirmForm(providerName, &m.deleteConfirm))
+				return m, m.form.Init()
+			}
+		case key.Matches(msg, menuKeys.Retry):
+			if m.switchProviderID > 0 {
+				providerName := m.getProviderName(m.switchProviderID)
+				return m, tea.Batch(
+					m.loadingCmd(fmt.Sprintf("Fetching models from %s...", providerName)),
+					func() tea.Msg {
+						diff, err := m.providerUseCases.RetryFetch(m.switchProviderID)
+						return retryFetchResultMsg{diff: diff, err: err}
+					},
+				)
+			}
+		case key.Matches(msg, menuKeys.Test):
+			if m.switchProviderID > 0 {
+				providerName := m.getProviderName(m.switchProviderID)
+				return m, tea.Batch(
+					m.loadingCmd(fmt.Sprintf("Testing %s...", providerName)),
+					func() tea.Msg {
+						err := m.providerUseCases.TestConnectivity(m.switchProviderID)
+						return testConnectivityResultMsg{err: err}
+					},
+				)
+			}
+		case key.Matches(msg, menuKeys.CustomModels):
+			if m.switchProviderID > 0 {
+				m.manageModelsResult = ManageModelsResult{}
+				providerName := m.getProviderName(m.switchProviderID)
+				m.currentView = manageModelsView
+				m.setForm(NewManageModelsForm(providerName, &m.manageModelsResult))
+				return m, m.form.Init()
+			}
+		case key.Matches(msg, menuKeys.Up):
+			m.switchProviderID = m.prevProviderID(m.switchProviderID)
+		case key.Matches(msg, menuKeys.Down):
+			m.switchProviderID = m.nextProviderID(m.switchProviderID)
+		case key.Matches(msg, menuKeys.Esc):
+			if m.switchRemoveMode || m.switchInManageMode {
+				m.switchRemoveMode = false
+				return m.enterManageBindingsView()
+			}
+			m.currentView = switchTargetCLIView
+			m.switchTargetCLIID = 0
+			m.setForm(NewSelectTargetCLIForm(m.targetCLIs, &m.switchTargetCLIID))
+			m.form.WithHeight(10)
+			return m, m.form.Init()
 		}
 
 	case switchAdvancedConfigView:
@@ -1207,13 +1363,10 @@ func (m *model) reenterFormForView(view viewType) tea.Cmd {
 		return m.form.Init()
 	case switchProviderView:
 		providers, err := m.providerUseCases.List()
-		if err != nil || len(providers) == 0 {
-			return func() tea.Msg {
-				return notificationMsg{message: "No providers available", isError: false, severity: "warn"}
-			}
+		if err == nil && len(providers) > 0 {
+			m.switchProviderID = providers[0].ID
 		}
-		m.setForm(NewSelectProviderForm(providers, &m.switchProviderID))
-		return m.form.Init()
+		return nil
 	case restoreCLIView:
 		return m.startRestoreCLIForm()
 	default:
@@ -1239,13 +1392,10 @@ func (m *model) enterSwitchView(view viewType) tea.Cmd {
 		return m.form.Init()
 	case switchProviderView:
 		providers, err := m.providerUseCases.List()
-		if err != nil || len(providers) == 0 {
-			return func() tea.Msg {
-				return notificationMsg{message: "No providers available", isError: false, severity: "warn"}
-			}
+		if err == nil && len(providers) > 0 {
+			m.switchProviderID = providers[0].ID
 		}
-		m.setForm(NewSelectProviderForm(providers, &m.switchProviderID))
-		return m.form.Init()
+		return nil
 	}
 	return nil
 }
@@ -1280,26 +1430,88 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 		apiKey := strings.TrimSpace(m.editProviderResult.APIKey)
 		authToken := strings.TrimSpace(m.editProviderResult.AuthToken)
 		dcw := parseContextWindowStr(m.editProviderResult.DefaultContextWindowStr)
-		if err := m.providerUseCases.Update(m.selectedProviderID, baseURL, discoveryURL, apiKey, authToken, dcw); err != nil {
+		customModels := strings.TrimSpace(m.editProviderResult.CustomModels)
+
+		// Parse custom models before Update so they survive a failed fetch
+		var customModelList []string
+		if customModels != "" {
+			for _, p := range strings.Split(customModels, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					customModelList = append(customModelList, p)
+				}
+			}
+		}
+
+		updateErr := m.providerUseCases.Update(m.selectedProviderID, baseURL, discoveryURL, apiKey, authToken, dcw)
+
+		// Insert custom models regardless of whether Update's fetch succeeded
+		if len(customModelList) > 0 {
+			if cmErr := m.providerUseCases.AddCustomModels(m.selectedProviderID, customModelList); cmErr != nil {
+				return m, tea.Batch(
+					func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} },
+					func() tea.Msg {
+						return notificationMsg{message: fmt.Sprintf("Custom models failed: %s", cmErr.Error()), isError: true}
+					},
+				)
+			}
+		}
+
+		if updateErr != nil {
+			msg := fmt.Sprintf("Provider saved, but model fetch failed: %s", updateErr.Error())
+			if len(customModelList) > 0 {
+				msg += " | Custom models added as fallback"
+			}
 			return m, tea.Batch(func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }, func() tea.Msg {
-				return notificationMsg{message: fmt.Sprintf("Update failed: %s", err.Error()), isError: true}
+				return notificationMsg{message: msg, severity: "warn"}
 			})
 		}
+
 		return m, tea.Batch(func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }, func() tea.Msg {
-			return notificationMsg{message: "Provider updated", isError: false}
+			msg := "Provider updated"
+			if len(customModelList) > 0 {
+				msg += " with custom models"
+			}
+			return notificationMsg{message: msg, isError: false}
 		})
 
 	case deleteProviderView:
 		m.form = nil
 		m.currentView = providerListView
 		if m.deleteConfirm {
-			if err := m.providerUseCases.Delete(m.selectedProviderID); err != nil {
+			if m.deleteMultiSelect && len(m.deleteSelectedSet) > 0 {
+				// Bulk delete: delete all selected providers
+				var lastErr error
+				count := 0
+				for id := range m.deleteSelectedSet {
+					if err := m.providerUseCases.Delete(id); err != nil {
+						lastErr = err
+						continue
+					}
+					count++
+				}
+				m.deleteMultiSelect = false
+				m.deleteSelectedSet = nil
+				if lastErr != nil {
+					return m, tea.Batch(func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }, func() tea.Msg {
+						return notificationMsg{message: fmt.Sprintf("Deleted %d, last error: %s", count, lastErr.Error()), isError: true}
+					})
+				}
 				return m, tea.Batch(func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }, func() tea.Msg {
-					return notificationMsg{message: fmt.Sprintf("Delete failed: %s", err.Error()), isError: true}
+					return notificationMsg{message: fmt.Sprintf("%d provider(s) deleted", count), isError: false}
 				})
+			} else if m.selectedProviderID > 0 {
+				// Single delete
+				if err := m.providerUseCases.Delete(m.selectedProviderID); err != nil {
+					return m, tea.Batch(func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }, func() tea.Msg {
+						return notificationMsg{message: fmt.Sprintf("Delete failed: %s", err.Error()), isError: true}
+					})
+				}
+				m.selectedProviderID = 0
 			}
-			m.selectedProviderID = 0
 		}
+		m.deleteMultiSelect = false
+		m.deleteSelectedSet = nil
 		return m, func() tea.Msg { m.refreshData(); return DashboardRefreshMsg{} }
 
 	case switchTargetCLIView:
@@ -1323,109 +1535,21 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Go straight to provider selection
+		// Go straight to provider selection — rich card list, no form
 		m.switchInManageMode = false
-		m.currentView = switchProviderView
 		providers, err := m.providerUseCases.List()
 		if err != nil || len(providers) == 0 {
+			m.currentView = switchTargetCLIView
+			m.switchTargetCLIID = 0
+			m.setForm(NewSelectTargetCLIForm(m.targetCLIs, &m.switchTargetCLIID))
+			m.form.WithHeight(10)
 			return m, func() tea.Msg {
 				return notificationMsg{message: "No providers available", isError: false, severity: "warn"}
 			}
 		}
-		m.setForm(NewSelectProviderForm(providers, &m.switchProviderID))
-		return m, m.form.Init()
-
-	case switchProviderView:
-		m.form = nil
-
-		// Remove mode: form complete → go to confirmation
-		if m.switchRemoveMode {
-			m.switchRemoveMode = false
-			if m.switchProviderID == 0 {
-				return m, func() tea.Msg {
-					return notificationMsg{message: "No provider selected", isError: false, severity: "warn"}
-				}
-			}
-			m.switchDeleteConfirm = false
-			providerName := m.getProviderName(m.switchProviderID)
-			m.currentView = deleteBindingConfirmView
-			m.setForm(NewDeleteConfirmForm(providerName, &m.switchDeleteConfirm))
-			return m, m.form.Init()
-		}
-
-		var targetCLI *domain.TargetCLI
-		for _, c := range m.targetCLIs {
-			if c.ID == m.switchTargetCLIID {
-				targetCLI = &c
-				break
-			}
-		}
-		if targetCLI == nil {
-			return m, func() tea.Msg {
-				return notificationMsg{message: "Target CLI not found", isError: false, severity: "warn"}
-			}
-		}
-
-		var envVars []string
-		if err := json.Unmarshal([]byte(targetCLI.EnvVars), &envVars); err != nil {
-			return m, func() tea.Msg {
-				return notificationMsg{message: "Failed to parse env vars", isError: true}
-			}
-		}
-		m.switchEnvVars = envVars
-
-		models, err := m.switchUseCases.GetModelsForProvider(m.switchProviderID)
-		if err != nil {
-			return m, func() tea.Msg {
-				return notificationMsg{message: fmt.Sprintf("Failed to get models: %s", err.Error()), isError: true}
-			}
-		}
-		if len(models) == 0 {
-			// Back to provider selection — don't leave user stuck
-			m.currentView = switchProviderView
-			providers, listErr := m.providerUseCases.List()
-			if listErr == nil && len(providers) > 0 {
-				m.setForm(NewSelectProviderForm(providers, &m.switchProviderID))
-				return m, tea.Batch(
-					m.form.Init(),
-					func() tea.Msg {
-						return notificationMsg{message: "No models for this provider. Try retrying fetch.", isError: false, severity: "warn"}
-					},
-				)
-			}
-			return m, func() tea.Msg {
-				return notificationMsg{message: "No models available for this provider", isError: false, severity: "warn"}
-			}
-		}
-		m.switchProviderModels = models
-
-		// Determine flow: env var mapping (Claude/Codex), single model (Copilot),
-		// or multi-select (pi/OpenCode)
-		m.switchUsesEnvMapping = targetCLI.Mutator == "claude-settings-json" || targetCLI.Mutator == "codex-config-toml"
-		m.switchIsCopilot = targetCLI.Mutator == "copilot-shell-profile"
-
-		if m.switchUsesEnvMapping {
-			m.currentView = switchMapModelsView
-			form, extractFn := NewMapModelsForm(envVars, models)
-			m.switchExtractFn = extractFn
-			m.setForm(form)
-			return m, m.form.Init()
-		}
-
-		if m.switchIsCopilot {
-			// Copilot uses a single model via COPILOT_MODEL
-			m.switchSingleModelResult = SelectSingleModelResult{}
-			m.currentView = switchSelectModelsView
-			m.setForm(NewSelectSingleModelForm(models, &m.switchSingleModelResult))
-			return m, m.form.Init()
-		}
-
-		// pi/OpenCode: multi-select, all pre-selected by default
-		m.switchProviderModels = models
-		m.switchRegisterResult = RegisterModelsResult{}
-		m.currentView = switchSelectModelsView
-		m.setForm(NewSelectModelsForm(models, &m.switchRegisterResult))
-		return m, m.form.Init()
+		m.switchProviderID = providers[0].ID
+		m.currentView = switchProviderView
+		return m, nil
 
 	case switchSelectModelsView:
 		m.form = nil
@@ -1795,14 +1919,11 @@ func (m *model) renderDashboardSummary() string {
 }
 
 // isCenteredView returns true if the current view should use centered layout mode.
-// Most views use centered layout for consistent aesthetics. Diff and scrollable
-// list views use full-width fluid layout.
+// Most views use centered layout. Only the confirmation diff view needs full-width fluid.
 func (m *model) isCenteredView() bool {
 	switch m.currentView {
 	case switchConfirmationView:
 		return false // diff needs full-width
-	case providerListView:
-		return false // scrollable list needs full-width
 	default:
 		return true
 	}
@@ -1904,7 +2025,38 @@ func (m *model) renderBodyContent() string {
 		return content
 
 	case providerListView:
-		return m.providerViewport.View()
+		// Prep render: search bar + multi-select indicator + viewport
+		content := m.providerViewport.View()
+		if m.searchActive || m.providerSearch != "" || m.deleteMultiSelect {
+			var parts []string
+			// Search bar
+			if m.searchActive {
+				searchPrompt := lipgloss.NewStyle().Foreground(aimuxT.Accent).Bold(true).Render("/")
+				searchText := lipgloss.NewStyle().Foreground(aimuxT.TextPrimary).Render(m.providerSearch)
+				cursor := lipgloss.NewStyle().Foreground(aimuxT.Accent).Render("█")
+				parts = append(parts, searchPrompt+searchText+cursor)
+			} else if m.providerSearch != "" {
+				searchLine := lipgloss.NewStyle().
+					Foreground(aimuxT.TextMuted).
+					Render(fmt.Sprintf("  /%s  (%d filtered)", m.providerSearch, len(m.filteredProviders())))
+				parts = append(parts, searchLine)
+			}
+			// Multi-select indicator
+			if m.deleteMultiSelect {
+				count := len(m.deleteSelectedSet)
+				modeLine := lipgloss.NewStyle().
+					Foreground(aimuxT.Accent).
+					Bold(true).
+					Render(fmt.Sprintf("  MULTI-SELECT  [%d selected]  Enter=toggle  d=delete  x=exit", count))
+				parts = append(parts, modeLine)
+			}
+			parts = append(parts, content)
+			return lipgloss.JoinVertical(lipgloss.Left, parts...)
+		}
+		return content
+
+	case switchProviderView:
+		return m.renderSwitchProviderView()
 
 	case switchManageBindingsView:
 		content := m.renderManageBindings()
@@ -2150,6 +2302,16 @@ func (m *model) contextualKeys() []navPair {
 			{"t", "test"},
 			{"esc", "back"},
 		}
+	case switchProviderView:
+		return []navPair{
+			{"↑/↓", "navigate"},
+			{"enter", "select"},
+			{"e", "edit"},
+			{"d", "delete"},
+			{"r", "retry"},
+			{"t", "test"},
+			{"esc", "back"},
+		}
 	case switchConfirmationView:
 		return []navPair{
 			{"↑/↓", "scroll"},
@@ -2225,6 +2387,24 @@ func (m *model) refreshData() tea.Msg {
 	return DashboardRefreshMsg{}
 }
 
+// filteredProviders returns providers matching the current search (case-insensitive).
+func (m *model) filteredProviders() []domain.Provider {
+	if m.providerSearch == "" {
+		return m.providers
+	}
+	q := strings.ToLower(m.providerSearch)
+	var out []domain.Provider
+	for _, p := range m.providers {
+		if strings.Contains(strings.ToLower(p.Name), q) {
+			out = append(out, p)
+		}
+	}
+	if out == nil {
+		return []domain.Provider{}
+	}
+	return out
+}
+
 // syncProviderViewport re-renders the provider list into the provider viewport
 // and resizes it to fill the body height. No-op until terminal dimensions are known.
 func (m *model) syncProviderViewport() {
@@ -2232,8 +2412,9 @@ func (m *model) syncProviderViewport() {
 		return
 	}
 	layout := m.computeLayout()
-	content := RenderProviderList(m.providers, m.selectedProviderID, m.width, m.allModels, m.activeMultiplexes)
-	m.providerViewport.Width = m.width - 4
+	providers := m.filteredProviders()
+	content := RenderProviderList(providers, m.selectedProviderID, m.width, m.allModels, m.activeMultiplexes, m.deleteMultiSelect, m.deleteSelectedSet)
+	m.providerViewport.Width = m.width
 	m.providerViewport.Height = layout.bodyH
 	m.providerViewport.SetContent(content)
 }
@@ -2353,8 +2534,9 @@ func (m *model) getProvider(id int64) *domain.Provider {
 }
 
 func (m *model) nextProviderID(current int64) int64 {
+	list := m.filteredProviders()
 	found := false
-	for _, p := range m.providers {
+	for _, p := range list {
 		if found {
 			return p.ID
 		}
@@ -2362,15 +2544,16 @@ func (m *model) nextProviderID(current int64) int64 {
 			found = true
 		}
 	}
-	if len(m.providers) > 0 {
-		return m.providers[0].ID
+	if len(list) > 0 {
+		return list[0].ID
 	}
 	return 0
 }
 
 func (m *model) prevProviderID(current int64) int64 {
+	list := m.filteredProviders()
 	var prev int64
-	for _, p := range m.providers {
+	for _, p := range list {
 		if p.ID == current {
 			if prev != 0 {
 				return prev
@@ -2379,8 +2562,8 @@ func (m *model) prevProviderID(current int64) int64 {
 		}
 		prev = p.ID
 	}
-	if len(m.providers) > 0 {
-		return m.providers[len(m.providers)-1].ID
+	if len(list) > 0 {
+		return list[len(list)-1].ID
 	}
 	return 0
 }
@@ -2662,6 +2845,202 @@ func (m *model) renderManageBindings() string {
 	grid := strings.Join(cards, "\n")
 
 	return lipgloss.JoinVertical(lipgloss.Left, title, "", grid)
+}
+
+// renderSwitchProviderView renders the provider selection list for the switch flow.
+// Shows provider cards with status, in-use indicator, and selection highlighting.
+func (m *model) renderSwitchProviderView() string {
+	cliName := ""
+	for _, tc := range m.targetCLIs {
+		if tc.ID == m.switchTargetCLIID {
+			cliName = tc.Name
+			break
+		}
+	}
+
+	header := aimuxT.CardTitle.Render("Select Provider for " + cliName)
+
+	if len(m.providers) == 0 {
+		empty := aimuxT.Muted.Render("No providers configured. Press 'a' to add one.")
+		cardBody := lipgloss.JoinVertical(lipgloss.Left, header, "", empty)
+		return aimuxT.Card.Copy().Width(m.width - 8).Render(cardBody)
+	}
+
+	modelCounts := make(map[int64]int)
+	for _, mod := range m.allModels {
+		modelCounts[mod.ProviderID]++
+	}
+
+	inUse := make(map[int64]bool)
+	for _, am := range m.activeMultiplexes {
+		inUse[am.ProviderID] = true
+	}
+
+	cardW := m.width - 8
+	if cardW < 40 {
+		cardW = 40
+	}
+	if cardW > 80 {
+		cardW = 80
+	}
+	maxTextW := cardW - 4
+	if maxTextW < 10 {
+		maxTextW = 10
+	}
+
+	var cards []string
+	for _, p := range m.providers {
+		selected := p.ID == m.switchProviderID
+
+		var statusBadge string
+		if p.Status == "error" {
+			statusBadge = lipgloss.NewStyle().
+				Foreground(aimuxT.Red).
+				Bold(true).
+				Render(" ERROR ")
+		} else {
+			statusBadge = lipgloss.NewStyle().
+				Foreground(aimuxT.Green).
+				Bold(true).
+				Render(" OK ")
+		}
+
+		var useBadge string
+		if inUse[p.ID] {
+			useBadge = lipgloss.NewStyle().
+				Foreground(aimuxT.Accent).
+				Render("\u25cf in use")
+		}
+
+		var selIndicator string
+		if selected {
+			selIndicator = lipgloss.NewStyle().
+				Foreground(aimuxT.Accent).
+				Bold(true).
+				Render("\u2038 ")
+		} else {
+			selIndicator = "  "
+		}
+
+		nameStyle := aimuxT.ItemTitle
+		nameMax := maxTextW - 20
+		if nameMax < 8 {
+			nameMax = 8
+		}
+		displayName := truncateText(p.Name, nameMax)
+		nameLine := selIndicator + nameStyle.Render(displayName) + "  " + statusBadge
+		if useBadge != "" {
+			nameLine += "  " + useBadge
+		}
+
+		urlDisplay := truncateText(p.BaseURL, maxTextW-4)
+		urlStyle := aimuxT.ItemDesc
+		urlLine := truncateTextStyle("  "+urlDisplay, urlStyle, maxTextW)
+
+		modelInfo := fmt.Sprintf("  %d models", modelCounts[p.ID])
+		modelLine := urlStyle.Render(modelInfo)
+
+		var logoLine string
+		if p.LogoURL != "" {
+			logoDisplay := truncateText(p.LogoURL, maxTextW-4)
+			logoLine = truncateTextStyle("  "+logoDisplay, urlStyle.Copy().Faint(true).Italic(true), maxTextW)
+		}
+
+		cardContent := lipgloss.JoinVertical(lipgloss.Left, nameLine, urlLine, modelLine)
+		if logoLine != "" {
+			cardContent = lipgloss.JoinVertical(lipgloss.Left, cardContent, logoLine)
+		}
+
+		cardStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(aimuxT.Border).
+			Padding(0, 1).
+			Width(cardW)
+		if selected {
+			cardStyle = cardStyle.BorderForeground(aimuxT.Accent)
+		}
+
+		cards = append(cards, cardStyle.Render(cardContent))
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left, header, "", strings.Join(cards, "\n"))
+	return lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), content)
+}
+
+// proceedFromProviderSelection handles Enter on a provider in the switch flow.
+// Extracted from the old form-completion handler — same logic but without a huh form.
+func (m *model) proceedFromProviderSelection() (tea.Model, tea.Cmd) {
+	// Remove mode: go to delete confirmation (handled from manage bindings)
+	if m.switchRemoveMode {
+		m.switchRemoveMode = false
+		if m.switchProviderID == 0 {
+			return m, func() tea.Msg {
+				return notificationMsg{message: "No provider selected", isError: false, severity: "warn"}
+			}
+		}
+		m.switchDeleteConfirm = false
+		providerName := m.getProviderName(m.switchProviderID)
+		m.currentView = deleteBindingConfirmView
+		m.setForm(NewDeleteConfirmForm(providerName, &m.switchDeleteConfirm))
+		return m, m.form.Init()
+	}
+
+	var targetCLI *domain.TargetCLI
+	for _, c := range m.targetCLIs {
+		if c.ID == m.switchTargetCLIID {
+			targetCLI = &c
+			break
+		}
+	}
+	if targetCLI == nil {
+		return m, func() tea.Msg {
+			return notificationMsg{message: "Target CLI not found", isError: false, severity: "warn"}
+		}
+	}
+
+	var envVars []string
+	if err := json.Unmarshal([]byte(targetCLI.EnvVars), &envVars); err != nil {
+		return m, func() tea.Msg {
+			return notificationMsg{message: "Failed to parse env vars", isError: true}
+		}
+	}
+	m.switchEnvVars = envVars
+
+	models, err := m.switchUseCases.GetModelsForProvider(m.switchProviderID)
+	if err != nil {
+		return m, func() tea.Msg {
+			return notificationMsg{message: fmt.Sprintf("Failed to get models: %s", err.Error()), isError: true}
+		}
+	}
+	if len(models) == 0 {
+		return m, func() tea.Msg {
+			return notificationMsg{message: "No models available for this provider. Try retrying fetch (r).", isError: false, severity: "warn"}
+		}
+	}
+	m.switchProviderModels = models
+
+	m.switchUsesEnvMapping = targetCLI.Mutator == "claude-settings-json" || targetCLI.Mutator == "codex-config-toml"
+	m.switchIsCopilot = targetCLI.Mutator == "copilot-shell-profile"
+
+	if m.switchUsesEnvMapping {
+		m.currentView = switchMapModelsView
+		form, extractFn := NewMapModelsForm(envVars, models)
+		m.switchExtractFn = extractFn
+		m.setForm(form)
+		return m, m.form.Init()
+	}
+
+	if m.switchIsCopilot {
+		m.switchSingleModelResult = SelectSingleModelResult{}
+		m.currentView = switchSelectModelsView
+		m.setForm(NewSelectSingleModelForm(models, &m.switchSingleModelResult))
+		return m, m.form.Init()
+	}
+
+	m.switchRegisterResult = RegisterModelsResult{}
+	m.currentView = switchSelectModelsView
+	m.setForm(NewSelectModelsForm(models, &m.switchRegisterResult))
+	return m, m.form.Init()
 }
 
 func (m *model) renderAdvancedConfigReview() string {

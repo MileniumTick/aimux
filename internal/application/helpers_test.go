@@ -41,6 +41,9 @@ func setupTestDB(t *testing.T) *sql.DB {
 	if err := sqlite.MigrationAddLogoURL(db); err != nil {
 		t.Fatalf("failed to add logo_url: %v", err)
 	}
+	if err := sqlite.MigrationAddCustomModelsColumn(db); err != nil {
+		t.Fatalf("failed to add custom_models column: %v", err)
+	}
 	if err := sqlite.CreateIndexes(db); err != nil {
 		t.Fatalf("failed to create indexes: %v", err)
 	}

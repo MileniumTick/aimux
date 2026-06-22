@@ -41,9 +41,9 @@ func (r *ProviderRepository) Add(name, baseURL, discoveryURL, apiKey, authToken 
 func (r *ProviderRepository) Get(id int64) (domain.Provider, error) {
 	var p domain.Provider
 	err := r.DB.QueryRow(
-		`SELECT id, name, base_url, discovery_url, default_context_window, logo_url, api_key, auth_token, status, created_at, updated_at FROM providers WHERE id = ?`,
+		`SELECT id, name, base_url, discovery_url, default_context_window, logo_url, api_key, auth_token, status, created_at, updated_at, COALESCE(custom_models, '') FROM providers WHERE id = ?`,
 		id,
-	).Scan(&p.ID, &p.Name, &p.BaseURL, &p.DiscoveryURL, &p.DefaultContextWindow, &p.LogoURL, &p.APIKey, &p.AuthToken, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+	).Scan(&p.ID, &p.Name, &p.BaseURL, &p.DiscoveryURL, &p.DefaultContextWindow, &p.LogoURL, &p.APIKey, &p.AuthToken, &p.Status, &p.CreatedAt, &p.UpdatedAt, &p.CustomModels)
 	if err != nil {
 		return p, fmt.Errorf("get provider %d: %w", id, err)
 	}
@@ -53,7 +53,7 @@ func (r *ProviderRepository) Get(id int64) (domain.Provider, error) {
 // List returns all providers ordered by name ascending.
 func (r *ProviderRepository) List() ([]domain.Provider, error) {
 	rows, err := r.DB.Query(
-		`SELECT id, name, base_url, discovery_url, default_context_window, logo_url, api_key, auth_token, status, created_at, updated_at FROM providers ORDER BY name ASC`,
+		`SELECT id, name, base_url, discovery_url, default_context_window, logo_url, api_key, auth_token, status, created_at, updated_at, COALESCE(custom_models, '') FROM providers ORDER BY name ASC`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list providers: %w", err)
@@ -63,7 +63,7 @@ func (r *ProviderRepository) List() ([]domain.Provider, error) {
 	var providers []domain.Provider
 	for rows.Next() {
 		var p domain.Provider
-		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.DiscoveryURL, &p.DefaultContextWindow, &p.LogoURL, &p.APIKey, &p.AuthToken, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.BaseURL, &p.DiscoveryURL, &p.DefaultContextWindow, &p.LogoURL, &p.APIKey, &p.AuthToken, &p.Status, &p.CreatedAt, &p.UpdatedAt, &p.CustomModels); err != nil {
 			return nil, fmt.Errorf("scan provider: %w", err)
 		}
 		providers = append(providers, p)
@@ -163,6 +163,7 @@ func (r *ProviderRepository) DeleteModelsByProvider(providerID int64) error {
 }
 
 // AddCustomModels inserts custom model names for a provider, skipping duplicates.
+// Also saves the comma-separated list to the custom_models column for form pre-fill.
 // Uses INSERT OR IGNORE so existing models (from API fetch) are preserved.
 func (r *ProviderRepository) AddCustomModels(providerID int64, modelNames []string) error {
 	if len(modelNames) == 0 {
@@ -186,6 +187,7 @@ func (r *ProviderRepository) AddCustomModels(providerID int64, modelNames []stri
 		return nil
 	}
 
+	// Save to provider_models
 	stmt := `INSERT OR IGNORE INTO provider_models (provider_id, model_name) VALUES `
 	var args []any
 	placeholders := make([]string, 0, len(unique))
@@ -194,10 +196,16 @@ func (r *ProviderRepository) AddCustomModels(providerID int64, modelNames []stri
 		args = append(args, providerID, name)
 	}
 	stmt += strings.Join(placeholders, ", ")
-	_, err := r.DB.Exec(stmt, args...)
-	if err != nil {
+	if _, err := r.DB.Exec(stmt, args...); err != nil {
 		return fmt.Errorf("add custom models: %w", err)
 	}
+
+	// Save raw list to providers.custom_models for form pre-fill
+	raw := strings.Join(unique, ",")
+	if _, err := r.DB.Exec(`UPDATE providers SET custom_models = ? WHERE id = ?`, raw, providerID); err != nil {
+		return fmt.Errorf("save custom_models column: %w", err)
+	}
+
 	return nil
 }
 

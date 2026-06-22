@@ -122,37 +122,6 @@ func NewSelectTargetCLIForm(clis []domain.TargetCLI, result *int64) *huh.Form {
 	).WithTheme(HuhTheme())
 }
 
-// NewSelectProviderForm creates a form to select a provider.
-// All providers are shown, with status label for non-active ones.
-func NewSelectProviderForm(providers []domain.Provider, result *int64) *huh.Form {
-	return newSelectProviderForm("Select Provider", providers, result)
-}
-
-// NewSelectProviderToRemoveForm creates a form to select a provider to remove.
-func NewSelectProviderToRemoveForm(providers []domain.Provider, result *int64) *huh.Form {
-	return newSelectProviderForm("Select provider to remove", providers, result)
-}
-
-func newSelectProviderForm(title string, providers []domain.Provider, result *int64) *huh.Form {
-	opts := make([]huh.Option[int64], 0, len(providers))
-	for _, p := range providers {
-		label := p.Name
-		if p.Status == "error" {
-			label = p.Name + " [ERROR]"
-		}
-		opts = append(opts, huh.NewOption(label, p.ID))
-	}
-	return huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[int64]().
-				Title(title).
-				Filtering(true).
-				Options(opts...).
-				Value(result),
-		),
-	).WithTheme(HuhTheme())
-}
-
 // MapModelsResult holds the result of the model mapping form.
 type MapModelsResult struct {
 	Mappings map[string]string
@@ -451,6 +420,7 @@ type EditProviderResult struct {
 	DefaultContextWindow    int64  // pre-filled value
 	APIKey                  string
 	AuthToken               string
+	CustomModels            string // comma-separated custom model IDs to add
 }
 
 // NewEditProviderForm creates a pre-filled form for editing an existing provider.
@@ -466,6 +436,7 @@ func NewEditProviderForm(provider domain.Provider, result *EditProviderResult) *
 	}
 	result.APIKey = provider.APIKey
 	result.AuthToken = provider.AuthToken
+	result.CustomModels = provider.CustomModels
 
 	return huh.NewForm(
 		// Group 1: Identity (read-only note)
@@ -520,6 +491,11 @@ func NewEditProviderForm(provider domain.Provider, result *EditProviderResult) *
 				Description("Fallback for models without metadata. 0 = not set.").
 				Placeholder("1000000").
 				Value(&result.DefaultContextWindowStr),
+			huh.NewInput().
+				Title("Custom Models (fallback)").
+				Description("Model IDs when API fetch fails. Comma-separated.").
+				Placeholder("my-fallback-model,other-model").
+				Value(&result.CustomModels),
 		).Title("Credentials"),
 	).WithTheme(HuhTheme())
 }
