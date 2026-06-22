@@ -48,8 +48,8 @@ func (r *TargetCLIRepository) Get(id int64) (domain.TargetCLI, error) {
 // Update updates a target CLI's config_path.
 func (r *TargetCLIRepository) Update(c domain.TargetCLI) error {
 	_, err := r.DB.Exec(
-		`UPDATE target_clis SET config_path = ? WHERE id = ?`,
-		c.ConfigPath, c.ID,
+		`UPDATE target_clis SET config_path = ?, mutator_config = ? WHERE id = ?`,
+		c.ConfigPath, c.MutatorConfig, c.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("update target cli %d: %w", c.ID, err)

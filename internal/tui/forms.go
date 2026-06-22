@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -272,8 +273,10 @@ func NewEditModelsForm(models []domain.ProviderModel, currentModels []string, re
 
 // EditCLIPathResult holds the values from the Edit CLI Path form.
 type EditCLIPathResult struct {
-	CLIID      int64
-	ConfigPath string
+	CLIID         int64
+	ConfigPath    string
+	MutatorConfig string
+	BinaryPath    string
 }
 
 // cliConfigLabel returns a human-readable config path label for a CLI.
@@ -314,6 +317,20 @@ func NewEditCLIPathForm(cli *domain.TargetCLI, result *EditCLIPathResult) *huh.F
 	result.CLIID = cli.ID
 	result.ConfigPath = cli.ConfigPath
 
+	// Extract binary_path from mutator_config
+	var mc map[string]any
+	if cli.MutatorConfig != "" && cli.MutatorConfig != "{}" {
+		json.Unmarshal([]byte(cli.MutatorConfig), &mc)
+	}
+	if bp, ok := mc["binary_path"].(string); ok {
+		result.BinaryPath = bp
+	}
+	// Show raw mutator_config JSON for editing
+	result.MutatorConfig = cli.MutatorConfig
+	if result.MutatorConfig == "" {
+		result.MutatorConfig = "{}"
+	}
+
 	if cli.Mutator == "copilot-shell-profile" {
 		// copilot uses auto-detected shell profile — no config path to edit
 		return huh.NewForm(
@@ -340,6 +357,16 @@ func NewEditCLIPathForm(cli *domain.TargetCLI, result *EditCLIPathResult) *huh.F
 					}
 					return nil
 				}),
+			huh.NewInput().
+				Title("Binary Path (optional)").
+				Description("Custom path to the CLI binary. Leave empty for PATH lookup.").
+				Placeholder("/usr/bin/claude").
+				Value(&result.BinaryPath),
+			huh.NewInput().
+				Title("Mutator Config (JSON)").
+				Description("Extra config for this CLI. Includes wire_api, npm, provider_id, etc.").
+				Placeholder(`{"wire_api":"chat"}`).
+				Value(&result.MutatorConfig),
 		),
 	).WithTheme(HuhTheme())
 }

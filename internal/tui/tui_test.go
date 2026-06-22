@@ -9,8 +9,11 @@ import (
 
 func TestRenderMenu_Items(t *testing.T) {
 	result := RenderMenu(0, true)
-	if !strings.Contains(result, "Switch") {
-		t.Error("expected 'Switch' in menu")
+	if !strings.Contains(result, "Bind CLI") {
+		t.Error("expected 'Bind CLI' in menu")
+	}
+	if !strings.Contains(result, "Launch") {
+		t.Error("expected 'Launch' in menu")
 	}
 	if !strings.Contains(result, "Manage Providers") {
 		t.Error("expected 'Manage Providers' in menu")
@@ -21,15 +24,15 @@ func TestRenderMenu_Items(t *testing.T) {
 }
 
 func TestRenderMenu_SwitchDisabled(t *testing.T) {
-	result := RenderMenu(1, false)
-	if !strings.Contains(result, "Switch") {
-		t.Error("expected 'Switch' in menu even when disabled")
+	result := RenderMenu(2, false)
+	if !strings.Contains(result, "Bind CLI") {
+		t.Error("expected 'Bind CLI' in menu even when disabled")
 	}
 }
 
 func TestMenuItemCount(t *testing.T) {
-	if MenuItemCount() != 5 {
-		t.Errorf("expected 5 menu items, got %d", MenuItemCount())
+	if MenuItemCount() != 6 {
+		t.Errorf("expected 6 menu items, got %d", MenuItemCount())
 	}
 }
 

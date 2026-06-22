@@ -65,7 +65,14 @@ func ResolveConfigPath() (string, error) {
 	return filepath.Join(configDir, "matrix.db"), nil
 }
 
-// SetupLogFile opens a log file in the config directory and sets the stdlib
+// DaemonSocketPath returns the absolute path for the daemon Unix socket.
+func DaemonSocketPath() (string, error) {
+	configDir, err := ResolveConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(configDir, "aimuxd.sock"), nil
+}
 // log package to write there with timestamps. Errors go to both stderr and
 // the log file. Call once at startup.
 func SetupLogFile() (func(), error) {

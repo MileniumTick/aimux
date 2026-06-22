@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -66,6 +67,8 @@ const (
 	restoreCLIView
 	restoreBackupView
 	switchAdvancedConfigView
+	launchCLIView
+	launchModelView
 )
 
 // uiLayout holds the precomputed screen regions (A3).
@@ -143,6 +146,7 @@ type keyMap struct {
 	Edit   key.Binding
 	Help   key.Binding
 	Undo   key.Binding
+	Launch key.Binding
 }
 
 var menuKeys = keyMap{
@@ -158,6 +162,7 @@ var menuKeys = keyMap{
 	Edit:   key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit provider")),
 	Help:   key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 	Undo:   key.NewBinding(key.WithKeys("Z"), key.WithHelp("Z", "undo last apply")),
+	Launch: key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "launch agent")),
 }
 
 // ShortHelp implements help.KeyMap (A1).
@@ -226,6 +231,12 @@ type model struct {
 
 	selectedCLIID     int64
 	editCLIPathResult EditCLIPathResult
+
+	launchCLIName          string              // CLI name selected for launching via TUI
+	launchProviderID       int64               // provider ID for launch
+	launchModelName        string              // single model override for launch
+	launchModelMappings    map[string]string   // env→model mappings for launch
+	launchRegisteredModels []string            // registered models for launch
 
 	showHelp bool // when true, render help overlay instead of current view
 
@@ -354,9 +365,13 @@ func (m *model) fillBody(content string, bodyH int) string {
 }
 
 func (m *model) Init() tea.Cmd {
+	// Safety: clear loading state after 3s if refreshData never returns
 	return tea.Batch(
 		m.refreshData,
 		m.loadingCmd("Loading..."),
+		tea.Tick(3*time.Second, func(_ time.Time) tea.Msg {
+			return DashboardRefreshMsg{}
+		}),
 	)
 }
 
@@ -459,6 +474,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case DashboardRefreshMsg:
 		m.loading = false
 		m.loadingMsg = ""
+		// Auto-navigate to provider list on first run (0 providers)
+		if len(m.providers) == 0 && m.currentView == dashboardView && m.notification == "" {
+			m.currentView = providerListView
+			return m, func() tea.Msg {
+				return notificationMsg{
+					message:  "Add your first provider to get started. Press 'a' to begin.",
+					isError:  false,
+					severity: "info",
+					ttl:      10 * time.Second,
+				}
+			}
+		}
 		return m, nil
 
 	case SwitchToViewMsg:
@@ -629,19 +656,17 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, menuKeys.Up):
 			if m.menuSelected > 0 {
 				m.menuSelected--
-				if m.menuSelected == menuItemSwitch && len(m.providers) == 0 && m.menuSelected > 0 {
-					m.menuSelected--
-				}
+				m.skipDisabledMenuItems()
 			}
 		case key.Matches(msg, menuKeys.Down):
 			if m.menuSelected < menuItemCount-1 {
 				m.menuSelected++
-				if m.menuSelected == menuItemSwitch && len(m.providers) == 0 {
-					m.menuSelected++
-				}
+				m.skipDisabledMenuItems()
 			}
 		case key.Matches(msg, menuKeys.Enter):
 			return m.handleMenuSelection()
+		case key.Matches(msg, menuKeys.Launch):
+			return m.startLaunchFlow()
 		case key.Matches(msg, menuKeys.Quit):
 			return m, tea.Quit
 		}
@@ -862,6 +887,8 @@ func (m *model) handleMenuSelection() (tea.Model, tea.Cmd) {
 	switch m.menuSelected {
 	case menuItemSwitch:
 		return m.startSwitchFlow()
+	case menuItemLaunch:
+		return m.startLaunchFlow()
 	case menuItemManageProviders:
 		m.currentView = providerListView
 		if len(m.providers) > 0 {
@@ -927,6 +954,155 @@ func (m *model) startSwitchFlowCmd() tea.Cmd {
 	}
 	m.targetCLIs = clis
 	return nil
+}
+
+// startLaunchFlow lets the user pick CLI + provider on the fly, then
+// shows available models to pick before launching with env vars.
+func (m *model) startLaunchFlow() (tea.Model, tea.Cmd) {
+	if len(m.providers) == 0 {
+		return m, func() tea.Msg {
+			return notificationMsg{message: "No providers configured. Add one first.", isError: false, severity: "warn"}
+		}
+	}
+
+	clis, err := m.switchUseCases.ListTargetCLIs()
+	if err != nil || len(clis) == 0 {
+		return m, func() tea.Msg {
+			return notificationMsg{message: "No target CLIs configured", isError: true}
+		}
+	}
+	m.targetCLIs = clis
+
+	m.launchCLIName = ""
+	m.launchProviderID = 0
+	m.launchModelName = ""
+
+	cliOpts := make([]huh.Option[string], len(clis))
+	for i, c := range clis {
+		cliOpts[i] = huh.NewOption(c.Name, c.Name)
+	}
+
+	m.setForm(huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title("Launch Agent").
+				Description("Select a CLI to launch").
+				Options(cliOpts...).
+				Value(&m.launchCLIName),
+		).Title("1. Target CLI"),
+		huh.NewGroup(
+			huh.NewSelect[int64]().
+				Title("Select Provider").
+				Filtering(true).
+				Options(m.providerOptions()...).
+				Value(&m.launchProviderID),
+		).Title("2. Provider"),
+	).WithTheme(HuhTheme()))
+
+	m.currentView = launchCLIView
+	return m, m.form.Init()
+}
+
+// launchShowModels loads models for the selected provider and shows a
+// multi-select model form. Called after launchCLIView form completes.
+func (m *model) launchShowModels() (tea.Model, tea.Cmd) {
+	models, err := m.switchUseCases.GetModelsForProvider(m.launchProviderID)
+	if err != nil || len(models) == 0 {
+		return m.launchAgent()
+	}
+
+	// Find the selected CLI to determine model mapping style
+	var cliMutator string
+	for _, c := range m.targetCLIs {
+		if c.Name == m.launchCLIName {
+			cliMutator = c.Mutator
+			break
+		}
+	}
+
+	usesEnvMapping := cliMutator == "claude-settings-json" || cliMutator == "codex-config-toml"
+	m.switchUsesEnvMapping = usesEnvMapping
+
+	// Reset model data
+	m.launchModelMappings = make(map[string]string)
+	m.launchRegisteredModels = nil
+
+	if usesEnvMapping {
+		// Env-mapping CLI (Claude Code, Codex): map each env var to a model
+		var envVars []string
+		for _, c := range m.targetCLIs {
+			if c.Name == m.launchCLIName && c.EnvVars != "" {
+				json.Unmarshal([]byte(c.EnvVars), &envVars)
+				break
+			}
+		}
+		if len(envVars) == 0 {
+			envVars = []string{"ANTHROPIC_MODEL"}
+		}
+
+		m.switchEnvVars = envVars
+		m.switchExtractFn = nil
+		m.switchProviderModels = models
+
+		form, extractFn := NewMapModelsForm(envVars, models)
+		m.switchExtractFn = extractFn
+		m.setForm(form)
+	} else {
+		// Multi-model CLI (pi, opencode): multi-select models
+		m.switchRegisterResult = RegisterModelsResult{}
+		m.setForm(NewSelectModelsForm(models, &m.switchRegisterResult))
+	}
+
+	m.currentView = launchModelView
+	return m, m.form.Init()
+}
+
+// launchAgent writes the launch request and quits the TUI.
+func (m *model) launchAgent() (tea.Model, tea.Cmd) {
+	// Build model data: for env-mapping CLIs, use the mappings;
+	// for multi-model CLIs, use registered models list.
+	var modelData string
+	if m.switchUsesEnvMapping && m.switchExtractFn != nil {
+		mapped := m.switchExtractFn()
+		if data, err := json.Marshal(mapped.Mappings); err == nil {
+			modelData = string(data)
+		}
+	} else if len(m.switchRegisterResult.RegisteredModels) > 0 {
+		if data, err := json.Marshal(m.switchRegisterResult.RegisteredModels); err == nil {
+			modelData = string(data)
+		}
+	} else if m.launchModelName != "" {
+		modelData = `{"ANTHROPIC_MODEL":"` + m.launchModelName + `"}`
+	}
+
+	req := map[string]string{
+		"cli":      m.launchCLIName,
+		"provider": m.getProviderName(m.launchProviderID),
+		"models":   modelData,
+	}
+	launchPath := launchRequestPath()
+	if lp := launchPath; lp != "" {
+		if data, err := json.Marshal(req); err == nil {
+			os.WriteFile(lp, data, 0600)
+		}
+	}
+	m.launchCLIName = ""
+	m.launchProviderID = 0
+	m.launchModelName = ""
+	return m, tea.Quit
+}
+
+// providerOptions returns huh options for all active providers.
+func (m *model) providerOptions() []huh.Option[int64] {
+	opts := make([]huh.Option[int64], 0, len(m.providers))
+	for _, p := range m.providers {
+		label := p.Name
+		if p.Status == "error" {
+			label += " [ERROR]"
+		}
+		opts = append(opts, huh.NewOption(label, p.ID))
+	}
+	return opts
 }
 
 func (m *model) enterRestoreFlow() (tea.Model, tea.Cmd) {
@@ -1296,8 +1472,9 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 	case editCLIPathView:
 		m.form = nil
 		m.currentView = dashboardView
-		if m.editCLIPathResult.ConfigPath != "" {
-			if err := m.switchUseCases.UpdateCLIConfigPath(m.editCLIPathResult.CLIID, m.editCLIPathResult.ConfigPath); err != nil {
+		r := m.editCLIPathResult
+		if r.ConfigPath != "" {
+			if err := m.switchUseCases.UpdateCLIConfig(r.CLIID, r.ConfigPath, r.MutatorConfig, r.BinaryPath); err != nil {
 				return m, func() tea.Msg {
 					return notificationMsg{message: fmt.Sprintf("Update failed: %s", err.Error()), isError: true}
 				}
@@ -1392,9 +1569,31 @@ func (m *model) handleFormCompletion() (tea.Model, tea.Cmd) {
 				return notificationMsg{message: fmt.Sprintf("Backup restored for '%s'", m.restoreCLIName), isError: false}
 			},
 		)
+
+	case launchCLIView:
+		m.form = nil
+		if m.launchCLIName == "" || m.launchProviderID == 0 {
+			m.currentView = dashboardView
+			return m, nil
+		}
+		return m.launchShowModels()
+
+	case launchModelView:
+		m.form = nil
+		return m.launchAgent()
 	}
 
 	return m, nil
+}
+
+// launchRequestPath returns the path to the launch request file.
+// Used to communicate CLI launch requests from TUI to main.go.
+func launchRequestPath() string {
+	configDir := os.Getenv("HOME")
+	if configDir == "" {
+		return ""
+	}
+	return filepath.Join(configDir, ".config", "aimux", ".launch")
 }
 
 var (
@@ -1549,10 +1748,10 @@ func (m *model) renderBodyContent() string {
 		// ASCII art logo — full AIMUX logotype
 		logoBlock := RenderLogo(0, m.version)
 
-		// Welcome message (first-run only)
+		// Welcome message (first-run only) — shorter, more directive
 		var welcome string
 		if len(m.providers) == 0 {
-			welcome = aimuxT.Help.Render("Welcome to aimux! 🎯 — Centralize your AI provider credentials and switch between providers for Claude Code, OpenCode, Codex, Copilot, and pi.")
+			welcome = aimuxT.Help.Render("Welcome to aimux! Press 'a' in the provider list to add your first provider.")
 		}
 
 		var parts []string
@@ -1642,6 +1841,10 @@ func (m *model) renderHeader() string {
 		title += "  ·  Manage CLIs"
 	case restoreCLIView, restoreBackupView:
 		title += "  ·  Restore"
+	case launchCLIView:
+		title += "  ·  Launch"
+	case launchModelView:
+		title += "  ·  Launch · Select Model"
 	}
 
 	// logo + breadcrumb, padded
@@ -1924,6 +2127,8 @@ func (m *model) previousView() viewType {
 		return dashboardView
 	case restoreBackupView:
 		return restoreCLIView
+	case launchCLIView, launchModelView:
+		return dashboardView
 	default:
 		return dashboardView
 	}
@@ -1978,6 +2183,30 @@ func (m *model) prevProviderID(current int64) int64 {
 		return m.providers[len(m.providers)-1].ID
 	}
 	return 0
+}
+
+// skipDisabledMenuItems adjusts menuSelected to skip disabled menu items.
+// "Bind CLI" disabled when no providers. "Launch" always enabled if providers exist.
+func (m *model) skipDisabledMenuItems() {
+	hasProviders := len(m.providers) > 0
+
+	if m.menuSelected == menuItemSwitch && !hasProviders {
+		if m.menuSelected < menuItemCount-1 {
+			m.menuSelected = menuItemLaunch
+		}
+	}
+	if m.menuSelected == menuItemLaunch && !hasProviders {
+		if m.menuSelected < menuItemCount-1 {
+			m.menuSelected = menuItemManageProviders
+		}
+	}
+	// Clamp
+	if m.menuSelected < 0 {
+		m.menuSelected = 0
+	}
+	if m.menuSelected >= menuItemCount {
+		m.menuSelected = menuItemCount - 1
+	}
 }
 
 func (m *model) nextCLIID(current int64) int64 {
