@@ -140,6 +140,24 @@ User (TUI) → SwitchUseCases.Apply() → ConfigMutator.Mutate()
 
 ## Installation
 
+### One-liner install script — recommended for most users
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MileniumTick/aimux/main/install.sh | bash
+```
+
+Install to a custom prefix:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MileniumTick/aimux/main/install.sh | PREFIX=~/.local bash
+```
+
+### From Go install
+
+```bash
+go install github.com/MileniumTick/aimux@latest
+```
+
 ### From source
 
 ```bash
@@ -149,17 +167,12 @@ go build -o aimux .
 sudo mv aimux /usr/local/bin/
 ```
 
-### From Go install
-
-```bash
-go install github.com/MileniumTick/aimux@latest
-```
-
 ### Verify
 
 ```bash
-aimux version
-# → aimux 0.2.0
+# Any method above ends with the same binary
+/usr/local/bin/aimux version
+# → aimux 0.6.0
 ```
 
 ---
