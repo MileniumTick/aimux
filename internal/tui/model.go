@@ -425,13 +425,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.currentView == providerListView {
 			l := m.computeLayout()
 			if m.width > 0 && l.bodyH > 0 {
-				overlay := m.providerViewportOverlay()
-				vh := l.bodyH - overlay
-				if vh < 3 {
-					vh = 3
-				}
 				m.providerViewport.Width = m.width
-				m.providerViewport.Height = vh
+				m.providerViewport.Height = l.bodyH
 			}
 		}
 
@@ -923,6 +918,33 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case switchProviderView:
+		// Search mode: capture keystrokes to filter provider list
+		if m.searchActive {
+			switch {
+			case msg.Type == tea.KeyEsc:
+				m.searchActive = false
+				m.providerSearch = ""
+				m.syncSwitchProviderViewport()
+				return m, nil
+			case msg.Type == tea.KeyEnter:
+				m.searchActive = false
+				m.syncSwitchProviderViewport()
+				return m, nil
+			case msg.Type == tea.KeyBackspace:
+				if len(m.providerSearch) > 0 {
+					m.providerSearch = m.providerSearch[:len(m.providerSearch)-1]
+				}
+				m.syncSwitchProviderSelection()
+				m.syncSwitchProviderViewport()
+				return m, nil
+			case msg.Type == tea.KeyRunes:
+				m.providerSearch += string(msg.Runes)
+				m.syncSwitchProviderSelection()
+				m.syncSwitchProviderViewport()
+				return m, nil
+			}
+		}
+
 		switch {
 		case msg.Type == tea.KeyPgUp || msg.Type == tea.KeyPgDown ||
 			msg.Type == tea.KeyHome || msg.Type == tea.KeyEnd:
@@ -935,6 +957,10 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.addProviderResult = AddProviderResult{}
 			m.setForm(NewAddProviderForm(&m.addProviderResult))
 			return m, m.form.Init()
+		case key.Matches(msg, menuKeys.Search):
+			m.searchActive = true
+			m.providerSearch = ""
+			return m, nil
 		case key.Matches(msg, menuKeys.Enter):
 			if m.switchProviderID == 0 && len(m.providers) > 0 {
 				m.switchProviderID = m.providers[0].ID
@@ -942,6 +968,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.proceedFromProviderSelection()
 		case key.Matches(msg, menuKeys.Edit):
 			if m.switchProviderID > 0 {
+				m.selectedProviderID = m.switchProviderID
 				m.editProviderResult = EditProviderResult{}
 				provider := m.getProvider(m.switchProviderID)
 				if provider != nil {
@@ -952,6 +979,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, menuKeys.Delete):
 			if m.switchProviderID > 0 {
+				m.selectedProviderID = m.switchProviderID
 				m.currentView = deleteProviderView
 				m.deleteConfirm = false
 				providerName := m.getProviderName(m.switchProviderID)
@@ -982,6 +1010,7 @@ func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, menuKeys.CustomModels):
 			if m.switchProviderID > 0 {
+				m.selectedProviderID = m.switchProviderID
 				m.manageModelsResult = ManageModelsResult{}
 				providerName := m.getProviderName(m.switchProviderID)
 				m.currentView = manageModelsView
@@ -2068,15 +2097,17 @@ func (m *model) renderBodyContent() string {
 		return content
 
 	case providerListView:
-		// Prep render: search bar + multi-select indicator + viewport
+		return m.providerViewport.View()
+
+	case switchProviderView:
+		m.syncSwitchProviderViewport()
 		content := m.providerViewport.View()
-		if m.searchActive || m.providerSearch != "" || m.deleteMultiSelect {
+		if m.searchActive || m.providerSearch != "" {
 			var parts []string
-			// Search bar
 			if m.searchActive {
 				searchPrompt := lipgloss.NewStyle().Foreground(aimuxT.Accent).Bold(true).Render("/")
 				searchText := lipgloss.NewStyle().Foreground(aimuxT.TextPrimary).Render(m.providerSearch)
-				cursor := lipgloss.NewStyle().Foreground(aimuxT.Accent).Render("█")
+				cursor := lipgloss.NewStyle().Foreground(aimuxT.Accent).Render("\u2588")
 				parts = append(parts, searchPrompt+searchText+cursor)
 			} else if m.providerSearch != "" {
 				searchLine := lipgloss.NewStyle().
@@ -2084,23 +2115,10 @@ func (m *model) renderBodyContent() string {
 					Render(fmt.Sprintf("  /%s  (%d filtered)", m.providerSearch, len(m.filteredProviders())))
 				parts = append(parts, searchLine)
 			}
-			// Multi-select indicator
-			if m.deleteMultiSelect {
-				count := len(m.deleteSelectedSet)
-				modeLine := lipgloss.NewStyle().
-					Foreground(aimuxT.Accent).
-					Bold(true).
-					Render(fmt.Sprintf("  MULTI-SELECT  [%d selected]  Enter=toggle  d=delete  x=exit", count))
-				parts = append(parts, modeLine)
-			}
 			parts = append(parts, content)
-			return lipgloss.JoinVertical(lipgloss.Left, parts...)
+			return lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), strings.Join(parts, "\n"))
 		}
-		return content
-
-	case switchProviderView:
-		m.syncSwitchProviderViewport()
-		return lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), m.providerViewport.View())
+		return lipgloss.JoinVertical(lipgloss.Left, m.renderSwitchStepper(), content)
 
 	case switchManageBindingsView:
 		content := m.renderManageBindings()
@@ -2456,17 +2474,39 @@ func (m *model) filteredProviders() []domain.Provider {
 
 // syncProviderViewport re-renders the provider list into the provider viewport
 // and resizes it to fill the body height. No-op until terminal dimensions are known.
-// providerViewportOverlay returns how many lines the search bar / multi-select
-// indicator take above the viewport, so viewport height can be reduced accordingly.
-func (m *model) providerViewportOverlay() int {
-	n := 0
-	if m.searchActive || m.providerSearch != "" {
-		n++
+// renderProviderViewportContent builds the full content string for the provider
+// viewport, including search bar and multi-select indicator as header lines.
+func (m *model) renderProviderViewportContent() string {
+	var parts []string
+
+	// Search bar (shown when typing or active)
+	if m.searchActive {
+		searchPrompt := lipgloss.NewStyle().Foreground(aimuxT.Accent).Bold(true).Render("/")
+		searchText := lipgloss.NewStyle().Foreground(aimuxT.TextPrimary).Render(m.providerSearch)
+		cursor := lipgloss.NewStyle().Foreground(aimuxT.Accent).Render("█")
+		parts = append(parts, searchPrompt+searchText+cursor)
+	} else if m.providerSearch != "" {
+		filtered := len(m.filteredProviders())
+		parts = append(parts, lipgloss.NewStyle().
+			Foreground(aimuxT.TextMuted).
+			Render(fmt.Sprintf("/%s  (%d filtered)", m.providerSearch, filtered)))
 	}
+
+	// Multi-select indicator
 	if m.deleteMultiSelect {
-		n++
+		count := len(m.deleteSelectedSet)
+		parts = append(parts, lipgloss.NewStyle().
+			Foreground(aimuxT.Accent).
+			Bold(true).
+			Render(fmt.Sprintf("MULTI-SELECT  [%d selected]  Enter=toggle  d=delete  x=exit", count)))
 	}
-	return n
+
+	// Provider list
+	providers := m.filteredProviders()
+	listContent := RenderProviderList(providers, m.selectedProviderID, m.width, m.allModels, m.activeMultiplexes, m.deleteMultiSelect, m.deleteSelectedSet)
+	parts = append(parts, listContent)
+
+	return strings.Join(parts, "\n")
 }
 
 func (m *model) syncProviderViewport() {
@@ -2474,15 +2514,9 @@ func (m *model) syncProviderViewport() {
 		return
 	}
 	layout := m.computeLayout()
-	overlay := m.providerViewportOverlay()
-	vh := layout.bodyH - overlay
-	if vh < 3 {
-		vh = 3
-	}
-	providers := m.filteredProviders()
-	content := RenderProviderList(providers, m.selectedProviderID, m.width, m.allModels, m.activeMultiplexes, m.deleteMultiSelect, m.deleteSelectedSet)
+	content := m.renderProviderViewportContent()
 	m.providerViewport.Width = m.width
-	m.providerViewport.Height = vh
+	m.providerViewport.Height = layout.bodyH
 	m.providerViewport.SetContent(content)
 }
 
@@ -2514,6 +2548,24 @@ func (m *model) scrollProviderToSelected() {
 		m.providerViewport.SetYOffset(target)
 	} else {
 		m.providerViewport.SetYOffset(0)
+	}
+}
+
+// syncSwitchProviderSelection ensures the selected provider stays valid after search filtering.
+func (m *model) syncSwitchProviderSelection() {
+	if m.providerSearch == "" {
+		return
+	}
+	providers := m.filteredProviders()
+	found := false
+	for _, p := range providers {
+		if p.ID == m.switchProviderID {
+			found = true
+			break
+		}
+	}
+	if !found && len(providers) > 0 {
+		m.switchProviderID = providers[0].ID
 	}
 }
 
@@ -2971,8 +3023,19 @@ func (m *model) renderSwitchProviderView() string {
 
 	header := aimuxT.CardTitle.Render("Select Provider for " + cliName)
 
-	if len(m.providers) == 0 {
-		empty := aimuxT.Muted.Render("No providers configured. Press 'a' to add one.")
+	// When search is active, use the filtered subset
+	providers := m.providers
+	if m.searchActive || m.providerSearch != "" {
+		providers = m.filteredProviders()
+	}
+
+	if len(providers) == 0 {
+		var empty string
+		if m.searchActive || m.providerSearch != "" {
+			empty = aimuxT.Muted.Render("No providers match your search.")
+		} else {
+			empty = aimuxT.Muted.Render("No providers configured. Press 'a' to add one.")
+		}
 		cardBody := lipgloss.JoinVertical(lipgloss.Left, header, "", empty)
 		return aimuxT.Card.Copy().Width(m.width - 8).Render(cardBody)
 	}
@@ -3000,7 +3063,7 @@ func (m *model) renderSwitchProviderView() string {
 	}
 
 	var cards []string
-	for _, p := range m.providers {
+	for _, p := range providers {
 		selected := p.ID == m.switchProviderID
 
 		var statusBadge string
