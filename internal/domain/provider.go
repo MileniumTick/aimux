@@ -56,19 +56,3 @@ const (
 )
 
 type ModelMetadata map[string]any
-
-// ProviderRepository defines the interface for provider persistence.
-type ProviderRepository interface {
-	Add(name, baseURL, discoveryURL, apiKey, authToken string, defaultContextWindow ...int64) (int64, error)
-	Get(id int64) (Provider, error)
-	List() ([]Provider, error)
-	Update(id int64, baseURL, discoveryURL, apiKey, authToken string, defaultContextWindow ...int64) error
-	UpdateStatus(id int64, status string) error
-	Delete(id int64) error
-	InsertModels(providerID int64, modelNames []string) error
-	AddCustomModels(providerID int64, modelNames []string) error
-	DeleteModelsByProvider(providerID int64) error
-	ListModels(providerID int64) ([]ProviderModel, error)
-	ListAllModels() ([]ProviderModel, error)
-	UpdateModelMetadata(providerID int64, modelName string, metadata ModelMetadata) error
-}

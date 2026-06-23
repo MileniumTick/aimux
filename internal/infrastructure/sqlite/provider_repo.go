@@ -9,7 +9,7 @@ import (
 	"github.com/MileniumTick/aimux/internal/domain"
 )
 
-// ProviderRepository implements domain.ProviderRepository.
+// ProviderRepository provides provider persistence against SQLite.
 type ProviderRepository struct {
 	DB *sql.DB
 }

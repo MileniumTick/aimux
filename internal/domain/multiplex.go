@@ -11,12 +11,4 @@ type ActiveMultiplex struct {
 	ProviderStatus string
 }
 
-// MultiplexRepository defines the interface for multiplex persistence.
-type MultiplexRepository interface {
-	GetActive(targetCLIID int64) (*ActiveMultiplex, error)
-	SetActive(targetCLIID, providerID int64, modelMappingsJSON string) error
-	ClearActive(targetCLIID int64) error
-	ClearBinding(targetCLIID, providerID int64) error
-	ListActive() ([]ActiveMultiplex, error)
-	ListForCLI(targetCLIID int64) ([]ActiveMultiplex, error)
-}
+

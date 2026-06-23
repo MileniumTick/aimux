@@ -7,7 +7,7 @@ import (
 	"github.com/MileniumTick/aimux/internal/domain"
 )
 
-// MultiplexRepository implements domain.MultiplexRepository.
+// MultiplexRepository provides multiplex persistence against SQLite.
 type MultiplexRepository struct {
 	DB *sql.DB
 }

@@ -7,12 +7,7 @@ import (
 
 // ── Compile-time interface checks ─────────────────────────────────────────
 
-var (
-	_ ProviderRepository    = (ProviderRepository)(nil)
-	_ TargetCLIRepository   = (TargetCLIRepository)(nil)
-	_ MultiplexRepository   = (MultiplexRepository)(nil)
-	_ ConfigMutator         = (ConfigMutator)(nil)
-)
+var _ ConfigMutator = (ConfigMutator)(nil)
 
 // ── Struct zero values ────────────────────────────────────────────────────
 
