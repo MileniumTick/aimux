@@ -3500,11 +3500,15 @@ func generateCompactDiff(currentConfig string, envVars map[string]string) string
 
 	// Match regular env var keys against config lines
 	for _, key := range regularKeys {
-		newLine := fmt.Sprintf("%s = %s", key, regularVals[key])
 		found := false
 		if hasConfig {
 			for i, line := range lines {
 				if strings.Contains(line, key) {
+					prefix := ""
+					if idx := strings.Index(line, `"`); idx > 0 {
+						prefix = line[:idx]
+					}
+					newLine := fmt.Sprintf(`%s"%s": "%s",`, prefix, key, regularVals[key])
 					matchedChanges = append(matchedChanges, change{idx: i, oldLine: line, newLine: newLine})
 					found = true
 					break
@@ -3512,6 +3516,7 @@ func generateCompactDiff(currentConfig string, envVars map[string]string) string
 			}
 		}
 		if !found {
+			newLine := fmt.Sprintf(`"%s": "%s"`, key, regularVals[key])
 			unmatChanges = append(unmatChanges, change{idx: -1, oldLine: "", newLine: newLine})
 		}
 	}
@@ -3527,7 +3532,7 @@ func generateCompactDiff(currentConfig string, envVars map[string]string) string
 				}
 			}
 		} else {
-			metaChanges = append(metaChanges, change{idx: -1, oldLine: "", newLine: fmt.Sprintf("%s = %s", key, metaVals[i]), meta: true})
+			metaChanges = append(metaChanges, change{idx: -1, oldLine: "", newLine: fmt.Sprintf(`"%s": "%s",`, key, metaVals[i]), meta: true})
 		}
 	}
 

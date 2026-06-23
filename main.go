@@ -59,38 +59,22 @@ func main() {
 	providerUseCases := application.NewProviderUseCases(providerRepo, multiplexRepo)
 
 	if len(os.Args) > 1 {
-		if err := runCLI(os.Args[1:], switchUseCases, db); err != nil {
+		if err := runCLI(os.Args[1:], switchUseCases, db, mutatorRegistry); err != nil {
 			os.Exit(1)
 		}
 		return
 	}
 
-	runTUI(providerUseCases, switchUseCases)
-}
-
-// setupDBPath resolves the database path. If dbPath is non-empty, it uses that
-// directly; otherwise falls back to application.ResolveConfigPath(). This
-// allows tests to override the path.
-func setupDBPath(dbPath string) (string, error) {
-	if dbPath != "" {
-		return dbPath, nil
-	}
-	return application.ResolveConfigPath()
+	runTUI(providerUseCases, switchUseCases, mutatorRegistry)
 }
 
 func setupDB() (db *sql.DB, cleanup func(), err error) {
-	dbPath, err := setupDBPath("")
+	dbPath, err := application.ResolveConfigPath()
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve config path: %w", err)
 	}
 
-	configDir := ""
-	for i := len(dbPath) - 1; i >= 0; i-- {
-		if dbPath[i] == '/' {
-			configDir = dbPath[:i]
-			break
-		}
-	}
+	configDir := filepath.Dir(dbPath)
 	if configDir != "" {
 		if err := os.MkdirAll(configDir, 0700); err != nil {
 			return nil, nil, fmt.Errorf("create config directory: %w", err)
@@ -128,7 +112,7 @@ func setupDB() (db *sql.DB, cleanup func(), err error) {
 	return db, cleanup, nil
 }
 
-func runTUI(providerUseCases *application.ProviderUseCases, switchUseCases *application.SwitchUseCases) {
+func runTUI(providerUseCases *application.ProviderUseCases, switchUseCases *application.SwitchUseCases, mutatorRegistry map[string]domain.ConfigMutator) {
 	for {
 		model := tui.NewModel(providerUseCases, switchUseCases, version)
 		program := tea.NewProgram(model, tea.WithAltScreen())
@@ -161,7 +145,7 @@ func runTUI(providerUseCases *application.ProviderUseCases, switchUseCases *appl
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			break
 		}
-		if err := daemon.RunCLI(db, launchReq.CLI, launchReq.Provider, launchReq.Models, launchReq.Reasoning); err != nil {
+		if err := daemon.RunCLI(db, launchReq.CLI, launchReq.Provider, launchReq.Models, launchReq.Reasoning, mutatorRegistry); err != nil {
 			fmt.Fprintf(os.Stderr, "\nError launching: %v\n", err)
 			fmt.Println("Press Enter to return to aimux...")
 			fmt.Scanln()
@@ -171,7 +155,7 @@ func runTUI(providerUseCases *application.ProviderUseCases, switchUseCases *appl
 	}
 }
 
-func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.DB) error {
+func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.DB, mutatorRegistry map[string]domain.ConfigMutator) error {
 	if len(args) < 1 {
 		fmt.Print(printHelp())
 		return nil
@@ -294,7 +278,7 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 			fmt.Fprintln(os.Stderr, "  aimux run opencode --fast")
 			return fmt.Errorf("missing CLI name")
 		}
-		if err := daemon.RunCLI(db, args[1], "", "", ""); err != nil {
+		if err := daemon.RunCLI(db, args[1], "", "", "", mutatorRegistry); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			return err
 		}

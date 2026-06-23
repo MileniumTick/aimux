@@ -195,9 +195,24 @@ func (uc *SwitchUseCases) DryRun(targetCLIID, providerID int64) (*DryRunResult, 
 		return nil, fmt.Errorf("no active multiplex for target CLI %d", targetCLIID)
 	}
 
-	// Collect all env vars from all bindings
+	// Filter by providerID when specified (same as Apply does)
+	muxes := allMux
+	if providerID != 0 {
+		muxes = nil
+		for _, m := range allMux {
+			if m.ProviderID == providerID {
+				muxes = append(muxes, m)
+				break
+			}
+		}
+		if len(muxes) == 0 {
+			return nil, fmt.Errorf("provider %d not bound to CLI %s", providerID, cli.Name)
+		}
+	}
+
+	// Collect all env vars from the filtered bindings
 	allMappings := make(map[string]string)
-	for _, mux := range allMux {
+	for _, mux := range muxes {
 		m := make(map[string]string)
 		if err := json.Unmarshal([]byte(mux.ModelMappings), &m); err != nil {
 			return nil, fmt.Errorf("parse model mappings: %w", err)
@@ -339,6 +354,15 @@ func (uc *SwitchUseCases) BindProfile(targetCLIID, providerID int64, mappings ma
 	mappingsJSON, err := json.Marshal(mappings)
 	if err != nil {
 		return fmt.Errorf("marshal mappings: %w", err)
+	}
+
+	// For single-provider CLIs, clear all existing bindings before setting the
+	// new one so stale bindings don't contaminate Apply or DryRun results.
+	isMultiProvider := targetCLI.Mutator == "pi-dual-json" || targetCLI.Mutator == "opencode-provider-json"
+	if !isMultiProvider {
+		if err := uc.multiplexRepo.ClearActive(targetCLIID); err != nil {
+			return fmt.Errorf("clear stale bindings: %w", err)
+		}
 	}
 
 	// Store active multiplex
