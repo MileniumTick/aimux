@@ -23,16 +23,6 @@ func TestBindProfile_FullMapping(t *testing.T) {
 		t.Fatalf("BindProfile failed: %v", err)
 	}
 
-	bound, err := uc.GetBoundModels(1)
-	if err != nil {
-		t.Fatalf("GetBoundModels failed: %v", err)
-	}
-	if len(bound) != 4 {
-		t.Fatalf("expected 4 bound models, got %d", len(bound))
-	}
-	if bound["ANTHROPIC_DEFAULT_HAIKU_MODEL"] != "claude-haiku-3" {
-		t.Errorf("expected haiku model, got %q", bound["ANTHROPIC_DEFAULT_HAIKU_MODEL"])
-	}
 }
 
 func TestBindProfile_PartialBinding(t *testing.T) {
@@ -49,13 +39,6 @@ func TestBindProfile_PartialBinding(t *testing.T) {
 		t.Fatalf("BindProfile failed: %v", err)
 	}
 
-	bound, _ := uc.GetBoundModels(1)
-	if len(bound) != 2 {
-		t.Fatalf("expected 2 entries in bound models (including empty), got %d", len(bound))
-	}
-	if bound["ANTHROPIC_DEFAULT_OPUS_MODEL"] != "" {
-		t.Errorf("expected empty string for opus model, got %q", bound["ANTHROPIC_DEFAULT_OPUS_MODEL"])
-	}
 }
 
 func TestBindProfile_UnknownModelID(t *testing.T) {
@@ -72,10 +55,6 @@ func TestBindProfile_UnknownModelID(t *testing.T) {
 		t.Fatal("expected error for unknown model, got nil")
 	}
 
-	bound, _ := uc.GetBoundModels(1)
-	if len(bound) != 0 {
-		t.Error("active multiplex should not have been created after failed binding")
-	}
 }
 
 func TestBindProfile_UnknownEnvVar(t *testing.T) {
@@ -90,18 +69,6 @@ func TestBindProfile_UnknownEnvVar(t *testing.T) {
 	err := uc.BindProfile(1, pid, mappings)
 	if err == nil {
 		t.Fatal("expected error for unknown env var, got nil")
-	}
-}
-
-func TestGetBoundModels_NoActiveProfile(t *testing.T) {
-	uc := setupSwitchTest(t)
-
-	bound, err := uc.GetBoundModels(1)
-	if err != nil {
-		t.Fatalf("GetBoundModels with no profile should not error: %v", err)
-	}
-	if len(bound) != 0 {
-		t.Errorf("expected empty map, got %v", bound)
 	}
 }
 

@@ -10,6 +10,13 @@ import (
 	"golang.org/x/mod/semver"
 )
 
+// UpdateInfo carries the result of a version check.
+type UpdateInfo struct {
+	CurrentVersion string // e.g. "1.2.0" (no v prefix)
+	LatestVersion  string // e.g. "1.3.0" (no v prefix)
+	HasUpdate      bool
+}
+
 // githubRelease represents a GitHub release API response (partial).
 type githubRelease struct {
 	TagName string         `json:"tag_name"`

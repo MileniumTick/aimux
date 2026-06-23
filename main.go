@@ -59,15 +59,27 @@ func main() {
 	providerUseCases := application.NewProviderUseCases(providerRepo, multiplexRepo)
 
 	if len(os.Args) > 1 {
-		runCLI(os.Args[1:], switchUseCases, db)
+		if err := runCLI(os.Args[1:], switchUseCases, db); err != nil {
+			os.Exit(1)
+		}
 		return
 	}
 
 	runTUI(providerUseCases, switchUseCases)
 }
 
+// setupDBPath resolves the database path. If dbPath is non-empty, it uses that
+// directly; otherwise falls back to application.ResolveConfigPath(). This
+// allows tests to override the path.
+func setupDBPath(dbPath string) (string, error) {
+	if dbPath != "" {
+		return dbPath, nil
+	}
+	return application.ResolveConfigPath()
+}
+
 func setupDB() (db *sql.DB, cleanup func(), err error) {
-	dbPath, err := application.ResolveConfigPath()
+	dbPath, err := setupDBPath("")
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve config path: %w", err)
 	}
@@ -159,35 +171,34 @@ func runTUI(providerUseCases *application.ProviderUseCases, switchUseCases *appl
 	}
 }
 
-func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.DB) {
+func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.DB) error {
 	if len(args) < 1 {
-		printHelp()
-		return
+		fmt.Print(printHelp())
+		return nil
 	}
 
 	switch args[0] {
 	case "apply":
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: aimux apply <cli-name>")
-			os.Exit(1)
+			return fmt.Errorf("usage: aimux apply <cli-name>")
 		}
 		cliName := args[1]
 		cli, err := switchUseCases.FindCLIByName(cliName)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 
 		providerID, err := switchUseCases.GetProviderForCLI(cli.ID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: no active binding for '%s'. Use the TUI to set one up first.\n", cliName)
-			os.Exit(1)
+			return err
 		}
 
 		result, err := switchUseCases.Apply(cli.ID, providerID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 		if result != nil && result.BackupPath != "" {
 			fmt.Printf("Applied. Backup saved to: %s\n", result.BackupPath)
@@ -199,7 +210,7 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 		active, err := switchUseCases.ListActiveMultiplexes()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 		if len(active) == 0 {
 			fmt.Println("No active multiplexes.")
@@ -218,7 +229,7 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 					fmt.Printf("  %s  (%s)\n", c.Name, path)
 				}
 			}
-			return
+			return nil
 		}
 		fmt.Println("Active multiplexes:")
 		for _, am := range active {
@@ -227,17 +238,16 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 
 	case "backups":
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: aimux backups <cli-name>")
-			os.Exit(1)
+			return fmt.Errorf("usage: aimux backups <cli-name>")
 		}
 		backups, err := switchUseCases.ListBackups(args[1])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 		if len(backups) == 0 {
 			fmt.Printf("No backups for '%s'.\n", args[1])
-			return
+			return nil
 		}
 		fmt.Printf("Backups for '%s' (newest first):\n", args[1])
 		for i, b := range backups {
@@ -246,13 +256,12 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 
 	case "restore":
 		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: aimux restore <cli-name>")
-			os.Exit(1)
+			return fmt.Errorf("usage: aimux restore <cli-name>")
 		}
 		bp, err := switchUseCases.RestoreLatest(args[1])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 		fmt.Printf("Restored latest backup: %s\n", bp)
 
@@ -267,14 +276,14 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 		execPath, err := os.Executable()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: cannot resolve executable path: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 		if update.IsHomebrewInstall(execPath) {
 			os.Exit(update.HomebrewUpdate())
 		}
 		if err := update.SelfUpdate(version, execPath); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 
 	case "run":
@@ -283,18 +292,18 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 			fmt.Fprintln(os.Stderr, "Examples:")
 			fmt.Fprintln(os.Stderr, "  aimux run claude-code")
 			fmt.Fprintln(os.Stderr, "  aimux run opencode --fast")
-			os.Exit(1)
+			return fmt.Errorf("missing CLI name")
 		}
 		if err := daemon.RunCLI(db, args[1], "", "", ""); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 
 	case "exec":
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "Usage: aimux exec <cli-name> -- <command> [args...]")
 			fmt.Fprintln(os.Stderr, "Example: aimux exec claude-code -- claude")
-			os.Exit(1)
+			return fmt.Errorf("missing CLI name")
 		}
 
 		cliName := args[1]
@@ -306,15 +315,14 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 		}
 
 		if len(cmdArgs) == 0 {
-			fmt.Fprintf(os.Stderr, "Error: no command specified after CLI name\n")
-			os.Exit(1)
+			return fmt.Errorf("no command specified after CLI name")
 		}
 
 		// Resolve env vars via direct DB
 		result, err := daemon.ResolveViaDB(db, cliName)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 
 		log.Printf("exec %s → %s: %d env vars", cliName, result.ProviderName, len(result.Env))
@@ -339,18 +347,19 @@ func runCLI(args []string, switchUseCases *application.SwitchUseCases, db *sql.D
 		}
 		if err := syscall.Exec(cmdArgs[0], cmdArgs, env); err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
 
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", args[0])
-		printHelp()
-		os.Exit(1)
+		fmt.Fprint(os.Stderr, printHelp())
+		return fmt.Errorf("unknown command: %s", args[0])
 	}
+	return nil
 }
 
-func printHelp() {
-	fmt.Print(`aimux — AI provider multiplexer for dev CLIs
+func printHelp() string {
+	return `aimux — AI provider multiplexer for dev CLIs
 
 Usage:
   aimux                    Launch TUI (default)
@@ -360,8 +369,6 @@ Usage:
   aimux list               Show active multiplexes
   aimux backups <cli-name> List centralized backups for a CLI
   aimux restore <cli-name> Restore the latest backup for a CLI
-  aimux daemon             Start the credential daemon (Unix socket)
-  aimux daemon-stop        Stop the running daemon
   aimux version            Show version and check for updates
   aimux update             Update aimux to the latest release
 
@@ -370,9 +377,7 @@ Examples:
   aimux run claude-code
   aimux run opencode --fast
   aimux exec claude-code -- claude
-  aimux daemon
-  aimux daemon-stop
   aimux backups claude-code
   aimux restore claude-code
-`)
+`
 }

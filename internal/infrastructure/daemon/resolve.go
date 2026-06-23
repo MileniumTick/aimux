@@ -62,7 +62,7 @@ func resolveEnvVars(cliName string, provider domain.Provider, modelMappings map[
 	for k, v := range modelMappings {
 		if v != "" && !strings.HasPrefix(k, "_") {
 			if _, exists := env[k]; !exists {
-				env[k] = applyContextSuffix(v, modelMeta)
+				env[k] = v
 			}
 		}
 	}
@@ -182,7 +182,7 @@ func resolveByName(name string, p domain.Provider, mappings map[string]string, m
 	case strings.HasSuffix(upper, "_MODEL"):
 		for _, v := range mappings {
 			if v != "" {
-				return applyContextSuffix(v, modelMeta)
+				return v
 			}
 		}
 	}
@@ -190,11 +190,4 @@ func resolveByName(name string, p domain.Provider, mappings map[string]string, m
 	return ""
 }
 
-// applyContextSuffix appends the context window suffix to a model name.
-// The suffix is only used when writing to Claude Code's settings.json via
-// the mutator. For env var injection in `aimux run`, we omit the suffix
-// because Claude Code adds it internally and the raw model name is what
-// the API expects.
-func applyContextSuffix(modelName string, modelMeta map[string]any) string {
-	return modelName
-}
+

@@ -366,24 +366,6 @@ func cloneMetadata(src domain.ModelMetadata) domain.ModelMetadata {
 	return cp
 }
 
-// ApplyModelOverrides applies user overrides on top of catalog metadata.
-// overrides is a map of modelID -> {key: value} — merges, does not replace.
-func ApplyModelOverrides(base domain.ModelMetadata, overrides map[string]any) domain.ModelMetadata {
-	if len(overrides) == 0 {
-		return base
-	}
-	// If base is nil, start fresh
-	result := base
-	if result == nil {
-		result = make(domain.ModelMetadata)
-	}
-	for k, v := range overrides {
-		// ponytail: simple merge, no deep merge for nested maps yet
-		result[k] = v
-	}
-	return result
-}
-
 // FormatCost returns a human-readable cost string for display.
 // ponytail: simple formatting, tolerates missing fields.
 func FormatCost(cost any) string {

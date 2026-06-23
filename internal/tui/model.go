@@ -2213,7 +2213,7 @@ func (m *model) renderToastBanner() string {
 		maxW = 10
 	}
 	if lipgloss.Width(msg) > maxW {
-		msg = truncateInline(msg, maxW)
+		msg = truncateText(msg, maxW)
 	}
 
 	var toastFg lipgloss.Color

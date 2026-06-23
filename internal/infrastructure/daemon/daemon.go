@@ -29,13 +29,7 @@ func ResolveViaDB(db *sql.DB, cliName string) (*ResolveResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list CLIs: %w", err)
 	}
-	var cli *domain.TargetCLI
-	for i := range clis {
-		if strings.EqualFold(clis[i].Name, cliName) {
-			cli = &clis[i]
-			break
-		}
-	}
+	cli := domain.FindCLIByName(clis, cliName)
 	if cli == nil {
 		return nil, fmt.Errorf("CLI '%s' not found", cliName)
 	}
@@ -105,13 +99,7 @@ func ResolveBinary(db *sql.DB, cliName string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("list CLIs: %w", err)
 	}
-	var cli *domain.TargetCLI
-	for i := range clis {
-		if strings.EqualFold(clis[i].Name, cliName) {
-			cli = &clis[i]
-			break
-		}
-	}
+	cli := domain.FindCLIByName(clis, cliName)
 	if cli == nil {
 		return "", fmt.Errorf("CLI '%s' not found", cliName)
 	}
@@ -157,13 +145,7 @@ func RunCLI(db *sql.DB, cliName, providerName, models, reasoning string) error {
 	if err != nil {
 		return fmt.Errorf("list CLIs: %w", err)
 	}
-	var cli *domain.TargetCLI
-	for i := range clis {
-		if strings.EqualFold(clis[i].Name, cliName) {
-			cli = &clis[i]
-			break
-		}
-	}
+	cli := domain.FindCLIByName(clis, cliName)
 	if cli == nil {
 		return fmt.Errorf("CLI '%s' not found", cliName)
 	}
@@ -403,17 +385,4 @@ func RunCLI(db *sql.DB, cliName, providerName, models, reasoning string) error {
 	return nil
 }
 
-// isClaudeEnvVar returns true if the env var name is relevant for Claude Code's
-// settings.json. Filters out vars from other providers (OPENAI_*, etc.) that
-// don't belong in Claude's config.
-func isClaudeEnvVar(name string) bool {
-	upper := strings.ToUpper(name)
-	// Anthropic/Claude-specific vars
-	if strings.HasPrefix(upper, "ANTHROPIC_") {
-		return true
-	}
-	if strings.HasPrefix(upper, "CLAUDE_") {
-		return true
-	}
-	return false
-}
+
