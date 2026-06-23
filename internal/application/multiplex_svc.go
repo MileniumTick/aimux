@@ -8,21 +8,22 @@ import (
 	"github.com/MileniumTick/aimux/internal/domain"
 	"github.com/MileniumTick/aimux/internal/infrastructure/config"
 	"github.com/MileniumTick/aimux/internal/infrastructure/mutators"
+	"github.com/MileniumTick/aimux/internal/infrastructure/sqlite"
 )
 
 // SwitchUseCases handles profile switching and config mutation business logic.
 type SwitchUseCases struct {
-	providerRepo  domain.ProviderRepository
-	cliRepo       domain.TargetCLIRepository
-	multiplexRepo domain.MultiplexRepository
+	providerRepo  *sqlite.ProviderRepository
+	cliRepo       *sqlite.TargetCLIRepository
+	multiplexRepo *sqlite.MultiplexRepository
 	mutators      map[string]domain.ConfigMutator
 }
 
 // NewSwitchUseCases creates a new SwitchUseCases.
 func NewSwitchUseCases(
-	providerRepo domain.ProviderRepository,
-	cliRepo domain.TargetCLIRepository,
-	multiplexRepo domain.MultiplexRepository,
+	providerRepo *sqlite.ProviderRepository,
+	cliRepo *sqlite.TargetCLIRepository,
+	multiplexRepo *sqlite.MultiplexRepository,
 	mutators map[string]domain.ConfigMutator,
 ) *SwitchUseCases {
 	return &SwitchUseCases{

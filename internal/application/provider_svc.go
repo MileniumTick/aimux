@@ -10,6 +10,7 @@ import (
 
 	"github.com/MileniumTick/aimux/internal/domain"
 	"github.com/MileniumTick/aimux/internal/infrastructure/config"
+	"github.com/MileniumTick/aimux/internal/infrastructure/sqlite"
 )
 
 const (
@@ -19,12 +20,12 @@ const (
 
 // ProviderUseCases handles provider business logic.
 type ProviderUseCases struct {
-	providerRepo  domain.ProviderRepository
-	multiplexRepo domain.MultiplexRepository
+	providerRepo  *sqlite.ProviderRepository
+	multiplexRepo *sqlite.MultiplexRepository
 }
 
 // NewProviderUseCases creates a new ProviderUseCases.
-func NewProviderUseCases(providerRepo domain.ProviderRepository, multiplexRepo domain.MultiplexRepository) *ProviderUseCases {
+func NewProviderUseCases(providerRepo *sqlite.ProviderRepository, multiplexRepo *sqlite.MultiplexRepository) *ProviderUseCases {
 	return &ProviderUseCases{
 		providerRepo:  providerRepo,
 		multiplexRepo: multiplexRepo,

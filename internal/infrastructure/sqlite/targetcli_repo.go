@@ -7,7 +7,7 @@ import (
 	"github.com/MileniumTick/aimux/internal/domain"
 )
 
-// TargetCLIRepository implements domain.TargetCLIRepository.
+// TargetCLIRepository provides target CLI persistence against SQLite.
 type TargetCLIRepository struct {
 	DB *sql.DB
 }

@@ -23,13 +23,6 @@ type TargetCLI struct {
 	MutatorConfig string // JSON object for mutator-specific configuration
 }
 
-// TargetCLIRepository defines the interface for target CLI persistence.
-type TargetCLIRepository interface {
-	List() ([]TargetCLI, error)
-	Get(id int64) (TargetCLI, error)
-	Update(TargetCLI) error
-}
-
 // BackupResult contains information about the backup performed during mutation.
 type BackupResult struct {
 	BackupPath string
