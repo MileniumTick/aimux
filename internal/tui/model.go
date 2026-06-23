@@ -14,6 +14,7 @@ import (
 	"github.com/MileniumTick/aimux/internal/application"
 	"github.com/MileniumTick/aimux/internal/domain"
 	"github.com/MileniumTick/aimux/internal/infrastructure/config"
+	"github.com/MileniumTick/aimux/internal/infrastructure/update"
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -135,6 +136,10 @@ type (
 	applyResultMsg struct {
 		result *domain.BackupResult
 		err    error
+	}
+
+	updateCheckResultMsg struct {
+		info *update.UpdateInfo
 	}
 )
 
@@ -285,7 +290,7 @@ type model struct {
 	// Provider list viewport — scrolls when providers overflow terminal
 	providerViewport viewport.Model
 
-	// ponytail: updateInfo removed — unused. Re-add when update notification is implemented.
+	updateInfo *update.UpdateInfo
 
 	version string // semver without "v" prefix, set at startup from main
 }
@@ -405,6 +410,13 @@ func (m *model) Init() tea.Cmd {
 		tea.Tick(3*time.Second, func(_ time.Time) tea.Msg {
 			return DashboardRefreshMsg{}
 		}),
+		func() tea.Msg {
+			info := update.StageUpdate(m.version)
+			if info == nil || !info.HasUpdate {
+				return updateCheckResultMsg{info: &update.UpdateInfo{HasUpdate: false}}
+			}
+			return updateCheckResultMsg{info: info}
+		},
 	)
 }
 
@@ -510,6 +522,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
+		}
+		return m, nil
+
+	case updateCheckResultMsg:
+		if msg.info.HasUpdate {
+			m.updateInfo = msg.info
+			m.notification = fmt.Sprintf("Update v%s available — restart aimux to update", msg.info.LatestVersion)
+			m.notificationIsMsg = false
 		}
 		return m, nil
 
@@ -2093,6 +2113,11 @@ func (m *model) renderBodyContent() string {
 		}
 		if welcome != "" {
 			parts = append(parts, welcome, "")
+		}
+		if m.updateInfo != nil && m.updateInfo.HasUpdate {
+			updateLine := lipgloss.NewStyle().Foreground(aimuxT.Cyan).Render(
+				fmt.Sprintf("Update available: v%s → v%s", m.version, m.updateInfo.LatestVersion))
+			parts = append(parts, updateLine, "")
 		}
 		parts = append(parts, menu)
 
