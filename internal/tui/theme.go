@@ -86,22 +86,33 @@ type aimuxTheme struct {
 }
 
 func newAimuxTheme() aimuxTheme {
+	dark := lipgloss.HasDarkBackground()
+
 	t := aimuxTheme{
 		Accent:    AccentPurple,
 		AccentDim: AccentPurpleDim,
-
-		TextPrimary:   TextPrimary,
-		TextSecondary: TextSecondary,
-		TextMuted:     TextMuted,
-
-		BgBase:  BaseBackground,
-		Surface: SurfaceCard,
-		Border:  BorderMuted,
 
 		Green: AccentGreen,
 		Red:   StatusError,
 		Warn:  StatusWarn,
 		Cyan:  AccentCyan,
+	}
+
+	if dark {
+		t.TextPrimary = TextPrimary
+		t.TextSecondary = TextSecondary
+		t.TextMuted = TextMuted
+		t.BgBase = BaseBackground
+		t.Surface = SurfaceCard
+		t.Border = BorderMuted
+	} else {
+		t.TextPrimary = lipgloss.Color("#1A1033")   // near-black dark purple
+		t.TextSecondary = lipgloss.Color("#4A3B6B") // medium-dark purple
+		t.TextMuted = lipgloss.Color("#8A7B9E")     // medium purple-gray
+		t.BgBase = lipgloss.Color("#F5F0FF")        // very light purple
+		t.Surface = lipgloss.Color("#FFFFFF")       // pure white
+		t.Border = lipgloss.Color("#D0C0E0")        // light purple
+		t.Cyan = lipgloss.Color("#0099AA")          // darker cyan for light bg
 	}
 
 	t.Header = lipgloss.NewStyle().
@@ -164,7 +175,8 @@ func newAimuxTheme() aimuxTheme {
 	// Unified footer
 	t.FooterKey = lipgloss.NewStyle().
 		Bold(true).
-		Foreground(t.Accent)
+		Foreground(t.Accent).
+		Background(t.BgBase)
 
 	t.FooterDesc = lipgloss.NewStyle().
 		Foreground(t.TextSecondary)
@@ -186,11 +198,20 @@ func newAimuxTheme() aimuxTheme {
 
 	// Diff view styles
 	t.DiffAdded = lipgloss.NewStyle().
-		Foreground(t.Green).
-		Background(t.Surface)
+		Foreground(t.Green)
+
+	if !dark {
+		t.DiffAdded = t.DiffAdded.Background(lipgloss.Color("#F0FAF0"))
+	} else {
+		t.DiffAdded = t.DiffAdded.Background(t.Surface)
+	}
 
 	t.DiffRemoved = lipgloss.NewStyle().
 		Foreground(t.Red)
+
+	if !dark {
+		t.DiffRemoved = t.DiffRemoved.Background(lipgloss.Color("#FFF0F0"))
+	}
 
 	t.DiffContext = lipgloss.NewStyle().
 		Foreground(t.TextSecondary)
@@ -217,18 +238,41 @@ func newAimuxTheme() aimuxTheme {
 func HuhTheme() *huh.Theme {
 	th := huh.ThemeBase()
 
-	pink := lipgloss.Color("#FF007F")   // AccentPink
-	cyan := lipgloss.Color("#00F0FF")   // AccentCyan
-	muted := lipgloss.Color("#5A4B76")  // TextMuted
-	dim := lipgloss.Color("#3D2663")    // BorderMuted (dim placeholder)
-	darkBg := lipgloss.Color("#0F051D") // BaseBackground
+	dark := lipgloss.HasDarkBackground()
+
+	pink := lipgloss.Color("#FF007F") // AccentPink
+
+	var (
+		accentCyan  lipgloss.Color
+		textPrimary lipgloss.Color
+		textSec     lipgloss.Color
+		textMuted   lipgloss.Color
+		placeholder lipgloss.Color
+		bgSurface   lipgloss.Color
+	)
+
+	if dark {
+		accentCyan = lipgloss.Color("#00F0FF")
+		textPrimary = lipgloss.Color("#FFFFFF")
+		textSec = lipgloss.Color("#A894D3")
+		textMuted = lipgloss.Color("#5A4B76")
+		placeholder = lipgloss.Color("#3D2663")
+		bgSurface = lipgloss.Color("#0F051D")
+	} else {
+		accentCyan = lipgloss.Color("#0099AA")
+		textPrimary = lipgloss.Color("#1A1033")
+		textSec = lipgloss.Color("#4A3B6B")
+		textMuted = lipgloss.Color("#8A7B9E")
+		placeholder = lipgloss.Color("#8A7B9E")
+		bgSurface = lipgloss.Color("#F5F0FF")
+	}
 
 	// Focused field: border in neon pink
 	th.Focused.Base = th.Focused.Base.BorderForeground(pink)
 	th.Focused.Card = th.Focused.Base
-	th.Focused.Title = th.Focused.Title.Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
-	th.Focused.NoteTitle = th.Focused.NoteTitle.Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
-	th.Focused.Description = th.Focused.Description.Foreground(lipgloss.Color("#A894D3"))
+	th.Focused.Title = th.Focused.Title.Foreground(textPrimary).Bold(true)
+	th.Focused.NoteTitle = th.Focused.NoteTitle.Foreground(textPrimary).Bold(true)
+	th.Focused.Description = th.Focused.Description.Foreground(textSec)
 
 	// Selectors: ❯ in pink
 	th.Focused.SelectSelector = lipgloss.NewStyle().SetString("❯ ").Foreground(pink)
@@ -237,21 +281,21 @@ func HuhTheme() *huh.Theme {
 	th.Focused.PrevIndicator = th.Focused.PrevIndicator.Foreground(pink)
 
 	// Options — pink block for selected, muted circle for unselected
-	th.Focused.Option = th.Focused.Option.Foreground(lipgloss.Color("#A894D3"))
-	th.Focused.SelectedOption = th.Focused.SelectedOption.Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+	th.Focused.Option = th.Focused.Option.Foreground(textSec)
+	th.Focused.SelectedOption = th.Focused.SelectedOption.Foreground(textPrimary).Bold(true)
 	th.Focused.SelectedPrefix = lipgloss.NewStyle().SetString("● ").Foreground(pink)
-	th.Focused.UnselectedPrefix = lipgloss.NewStyle().SetString("○ ").Foreground(muted)
-	th.Focused.UnselectedOption = th.Focused.UnselectedOption.Foreground(lipgloss.Color("#A894D3"))
+	th.Focused.UnselectedPrefix = lipgloss.NewStyle().SetString("○ ").Foreground(textMuted)
+	th.Focused.UnselectedOption = th.Focused.UnselectedOption.Foreground(textSec)
 
 	// Text input: ❯ prompt in pink, cyan cursor
 	th.Focused.TextInput.Prompt = lipgloss.NewStyle().SetString("❯ ").Foreground(pink)
-	th.Focused.TextInput.Cursor = th.Focused.TextInput.Cursor.Foreground(cyan)
-	th.Focused.TextInput.Placeholder = th.Focused.TextInput.Placeholder.Foreground(dim)
-	th.Focused.TextInput.Text = th.Focused.TextInput.Text.Foreground(lipgloss.Color("#FFFFFF"))
+	th.Focused.TextInput.Cursor = th.Focused.TextInput.Cursor.Foreground(accentCyan)
+	th.Focused.TextInput.Placeholder = th.Focused.TextInput.Placeholder.Foreground(placeholder)
+	th.Focused.TextInput.Text = th.Focused.TextInput.Text.Foreground(textPrimary)
 
 	// Buttons — pink accent for focused
 	th.Focused.FocusedButton = th.Focused.FocusedButton.Foreground(lipgloss.Color("#FFFFFF")).Background(pink).Bold(true).Padding(0, 2)
-	th.Focused.BlurredButton = th.Focused.BlurredButton.Foreground(muted).Background(darkBg).Padding(0, 2)
+	th.Focused.BlurredButton = th.Focused.BlurredButton.Foreground(textSec).Background(bgSurface).Padding(0, 2)
 
 	// Blurred = same as focused but without left border
 	th.Blurred = th.Focused
