@@ -35,6 +35,12 @@ func main() {
 		defer closeLog()
 	}
 
+	if execPath, err := os.Executable(); err == nil {
+		if applied := update.ApplyStagedUpdate(execPath); applied {
+			log.Println("Applied staged update")
+		}
+	}
+
 	db, cleanup, err := setupDB()
 	if err != nil {
 		log.Printf("database setup failed: %v", err)

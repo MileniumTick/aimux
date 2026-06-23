@@ -4,11 +4,15 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -29,10 +33,11 @@ func SelfUpdate(currentVersion, execPath string) error {
 		return err
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	apiClient := &http.Client{Timeout: 10 * time.Second}
+	dlClient := &http.Client{}
 
 	// Step 2: fetch latest release info
-	release, err := fetchLatestRelease(client, currentVersion)
+	release, err := fetchLatestRelease(apiClient, currentVersion)
 	if err != nil {
 		return fmt.Errorf("failed to check latest version: %w", err)
 	}
@@ -76,23 +81,14 @@ func SelfUpdate(currentVersion, execPath string) error {
 	tmpPath := tmpFile.Name()
 	defer os.Remove(tmpPath)
 
-	resp, err := client.Get(downloadURL)
-	if err != nil {
+	dlCtx, dlCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer dlCancel()
+
+	if err := downloadWithRetry(dlCtx, dlClient, downloadURL, tmpFile); err != nil {
 		tmpFile.Close()
 		return fmt.Errorf("download failed: %w", err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		tmpFile.Close()
-		resp.Body.Close()
-		return fmt.Errorf("download returned %d", resp.StatusCode)
-	}
-	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
-		resp.Body.Close()
-		return fmt.Errorf("download write failed: %w", err)
-	}
 	tmpFile.Close()
-	resp.Body.Close()
 
 	// Step 7: download checksums
 	var checksumsURL string
@@ -107,7 +103,14 @@ func SelfUpdate(currentVersion, execPath string) error {
 		return fmt.Errorf("checksums.txt not found in release assets")
 	}
 
-	checksumsResp, err := client.Get(checksumsURL)
+	checksumsCtx, checksumsCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer checksumsCancel()
+
+	checksumsReq, err := http.NewRequestWithContext(checksumsCtx, http.MethodGet, checksumsURL, nil)
+	if err != nil {
+		return fmt.Errorf("create checksums request: %w", err)
+	}
+	checksumsResp, err := dlClient.Do(checksumsReq)
 	if err != nil {
 		return fmt.Errorf("download checksums failed: %w", err)
 	}
@@ -315,6 +318,231 @@ func extractZip(archivePath, destPath string) error {
 	}
 
 	return fmt.Errorf("binary not found in zip archive")
+}
+
+// downloadWithRetry downloads a URL into a writer with retry on transient errors.
+func downloadWithRetry(ctx context.Context, client *http.Client, url string, w io.Writer) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Second)
+			if f, ok := w.(*os.File); ok {
+				f.Truncate(0)
+				f.Seek(0, 0)
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			if isRetryable(err) {
+				continue
+			}
+			return err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return fmt.Errorf("download returned %d", resp.StatusCode)
+		}
+
+		_, err = io.Copy(w, resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			if isRetryable(err) {
+				continue
+			}
+			return err
+		}
+		return nil
+	}
+	return fmt.Errorf("download failed after 3 attempts: %w", lastErr)
+}
+
+// isRetryable returns true if the error is a net.Timeout or context deadline exceeded.
+func isRetryable(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
+// StageUpdate checks for a newer version and downloads the binary
+// to ~/.config/aimux/.staged-update/aimux. Metadata is written to
+// ~/.config/aimux/.staged-update/metadata.json.
+// Returns UpdateInfo{HasUpdate: false} on any error (never crashes).
+func StageUpdate(currentVersion string) *UpdateInfo {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return &UpdateInfo{HasUpdate: false}
+	}
+	stageDir := filepath.Join(configDir, "aimux", ".staged-update")
+	stageBin := filepath.Join(stageDir, "aimux")
+
+	apiClient := &http.Client{Timeout: 10 * time.Second}
+	release, err := fetchLatestRelease(apiClient, currentVersion)
+	if err != nil {
+		return &UpdateInfo{HasUpdate: false}
+	}
+
+	latestVersion := strings.TrimPrefix(release.TagName, "v")
+
+	if semver.Compare("v"+currentVersion, "v"+latestVersion) >= 0 {
+		return &UpdateInfo{HasUpdate: false}
+	}
+
+	archiveExt := ".tar.gz"
+	if runtime.GOOS == "windows" {
+		archiveExt = ".zip"
+	}
+	archiveName := fmt.Sprintf("aimux_%s_%s_%s%s", latestVersion, runtime.GOOS, runtime.GOARCH, archiveExt)
+
+	var downloadURL string
+	for _, asset := range release.Assets {
+		if asset.Name == archiveName {
+			downloadURL = asset.BrowserDownloadURL
+			break
+		}
+	}
+	if downloadURL == "" {
+		return &UpdateInfo{HasUpdate: false}
+	}
+
+	tmpFile, err := os.CreateTemp("", "aimux_stage_*"+archiveExt)
+	if err != nil {
+		return &UpdateInfo{HasUpdate: false}
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	dlCtx, dlCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer dlCancel()
+	dlClient := &http.Client{}
+
+	if err := downloadWithRetry(dlCtx, dlClient, downloadURL, tmpFile); err != nil {
+		tmpFile.Close()
+		return &UpdateInfo{HasUpdate: false}
+	}
+	tmpFile.Close()
+
+	var checksumsURL string
+	for _, asset := range release.Assets {
+		if asset.Name == "checksums.txt" {
+			checksumsURL = asset.BrowserDownloadURL
+			break
+		}
+	}
+
+	if checksumsURL == "" {
+		return &UpdateInfo{HasUpdate: false}
+	}
+
+	checksumsCtx, checksumsCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer checksumsCancel()
+
+	checksumsReq, err := http.NewRequestWithContext(checksumsCtx, http.MethodGet, checksumsURL, nil)
+	if err != nil {
+		return &UpdateInfo{HasUpdate: false}
+	}
+	checksumsResp, err := dlClient.Do(checksumsReq)
+	if err != nil {
+		return &UpdateInfo{HasUpdate: false}
+	}
+	defer checksumsResp.Body.Close()
+
+	if checksumsResp.StatusCode != http.StatusOK {
+		return &UpdateInfo{HasUpdate: false}
+	}
+
+	checksumsBytes, err := io.ReadAll(checksumsResp.Body)
+	if err != nil {
+		return &UpdateInfo{HasUpdate: false}
+	}
+
+	var expectedSHA string
+	for _, line := range strings.Split(string(checksumsBytes), "\n") {
+		parts := strings.Fields(line)
+		if len(parts) >= 2 && parts[1] == archiveName {
+			expectedSHA = parts[0]
+			break
+		}
+	}
+	if expectedSHA == "" {
+		return &UpdateInfo{HasUpdate: false}
+	}
+
+	if err := validateChecksum(tmpPath, expectedSHA); err != nil {
+		return &UpdateInfo{HasUpdate: false}
+	}
+
+	if err := os.MkdirAll(stageDir, 0700); err != nil {
+		return &UpdateInfo{HasUpdate: false}
+	}
+
+	if err := extractBinary(tmpPath, stageBin); err != nil {
+		return &UpdateInfo{HasUpdate: false}
+	}
+
+	if err := os.Chmod(stageBin, 0755); err != nil {
+		os.RemoveAll(stageDir)
+		return &UpdateInfo{HasUpdate: false}
+	}
+
+	meta := fmt.Sprintf(`{"version":"%s"}`, latestVersion)
+	if err := os.WriteFile(filepath.Join(stageDir, "metadata.json"), []byte(meta), 0600); err != nil {
+		os.RemoveAll(stageDir)
+		return &UpdateInfo{HasUpdate: false}
+	}
+
+	return &UpdateInfo{
+		HasUpdate:      true,
+		CurrentVersion: currentVersion,
+		LatestVersion:  latestVersion,
+	}
+}
+
+// ApplyStagedUpdate checks for a previously staged binary and applies it
+// atomically to the current executable path. Returns true on success.
+// Never crashes: returns false on any error.
+func ApplyStagedUpdate(execPath string) bool {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return false
+	}
+	stageDir := filepath.Join(configDir, "aimux", ".staged-update")
+	stageBin := filepath.Join(stageDir, "aimux")
+	metaPath := filepath.Join(stageDir, "metadata.json")
+
+	if _, err := os.Stat(metaPath); os.IsNotExist(err) {
+		return false
+	}
+	if _, err := os.Stat(stageBin); os.IsNotExist(err) {
+		os.RemoveAll(stageDir)
+		return false
+	}
+
+	metaBytes, err := os.ReadFile(metaPath)
+	if err != nil {
+		os.RemoveAll(stageDir)
+		return false
+	}
+
+	log.Printf("Applying staged update: %s", strings.TrimSpace(string(metaBytes)))
+
+	if err := atomicReplace(stageBin, execPath); err != nil {
+		os.RemoveAll(stageDir)
+		return false
+	}
+
+	os.RemoveAll(stageDir)
+	return true
 }
 
 // randomString generates a random alphanumeric string of the given length.
