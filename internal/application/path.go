@@ -7,27 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 )
-
-var (
-	homeDirOnce sync.Once
-	homeDir     string
-	homeDirErr  error
-)
-
-func getHomeDir() (string, error) {
-	homeDirOnce.Do(func() {
-		homeDir, homeDirErr = os.UserHomeDir()
-	})
-	return homeDir, homeDirErr
-}
 
 // ExpandTilde expands a tilde-prefixed path using os.UserHomeDir().
 // If the path does not start with "~", it returns filepath.Clean(path).
 func ExpandTilde(path string) (string, error) {
 	if strings.HasPrefix(path, "~") {
-		hd, err := getHomeDir()
+		hd, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("resolve home directory: %w", err)
 		}
@@ -51,7 +37,7 @@ func ResolveConfigDir() (string, error) {
 	configDir, err := os.UserConfigDir()
 	if err != nil {
 		// Fallback: use home/.config
-		home, homeErr := getHomeDir()
+		home, homeErr := os.UserHomeDir()
 		if homeErr != nil {
 			return "", fmt.Errorf("resolve config directory: %w", err)
 		}

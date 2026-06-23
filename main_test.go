@@ -45,7 +45,7 @@ func TestRunCLIVersion(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	err := runCLI([]string{"version"}, nil, nil)
+	err := runCLI([]string{"version"}, nil, nil, nil)
 
 	w.Close()
 	var buf bytes.Buffer

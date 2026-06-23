@@ -13,7 +13,6 @@ import (
 	"github.com/MileniumTick/aimux/internal/application"
 	"github.com/MileniumTick/aimux/internal/domain"
 	"github.com/MileniumTick/aimux/internal/infrastructure/config"
-	"github.com/MileniumTick/aimux/internal/infrastructure/mutators"
 	"github.com/MileniumTick/aimux/internal/infrastructure/sqlite"
 )
 
@@ -81,15 +80,6 @@ var cliBinaries = map[string]string{
 	"pi-ai":          "pi",
 }
 
-// mutatorRegistry provides mutators for writing config files during run/launch.
-var mutatorRegistry = map[string]domain.ConfigMutator{
-	"claude-settings-json":   &mutators.ClaudeSettingsJSON{},
-	"opencode-provider-json": &mutators.OpenCodeProviderJSON{},
-	"codex-config-toml":      &mutators.CodexConfigTOML{},
-	"copilot-shell-profile":  &mutators.CopilotShellProfile{},
-	"pi-dual-json":           &mutators.PiDualJSON{},
-}
-
 // ResolveBinary resolves the binary path for a CLI name.
 // First checks if the CLI has a custom binary_path in its mutator_config,
 // then falls back to the known binary name map, then tries PATH lookup.
@@ -136,7 +126,7 @@ func ResolveBinary(db *sql.DB, cliName string) (string, error) {
 // If providerName is set, uses that provider instead of the bound one.
 // models is JSON: either {"ENV_VAR":"model",...} (env mapping) or ["model1","model2",...] (registered).
 // reasoning is the reasoning level: "off", "low", "medium", "high", "max".
-func RunCLI(db *sql.DB, cliName, providerName, models, reasoning string) error {
+func RunCLI(db *sql.DB, cliName, providerName, models, reasoning string, mutatorRegistry map[string]domain.ConfigMutator) error {
 	cliRepo := &sqlite.TargetCLIRepository{DB: db}
 	providerRepo := &sqlite.ProviderRepository{DB: db}
 	multiplexRepo := &sqlite.MultiplexRepository{DB: db}
