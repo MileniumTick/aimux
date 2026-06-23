@@ -235,16 +235,6 @@ func (uc *SwitchUseCases) ListTargetCLIs() ([]domain.TargetCLI, error) {
 	return uc.cliRepo.List()
 }
 
-// UpdateCLIConfigPath updates a target CLI's config path.
-func (uc *SwitchUseCases) UpdateCLIConfigPath(id int64, configPath string) error {
-	cli, err := uc.cliRepo.Get(id)
-	if err != nil {
-		return fmt.Errorf("get target cli %d: %w", id, err)
-	}
-	cli.ConfigPath = configPath
-	return uc.cliRepo.Update(cli)
-}
-
 // UpdateCLIConfig updates a CLI's config path, mutator_config, and optionally
 // sets binary_path in mutator_config.
 func (uc *SwitchUseCases) UpdateCLIConfig(id int64, configPath, mutatorConfig, binaryPath string) error {
@@ -272,15 +262,6 @@ func (uc *SwitchUseCases) UpdateCLIConfig(id int64, configPath, mutatorConfig, b
 		}
 	}
 	return uc.cliRepo.Update(cli)
-}
-
-// GetActiveForCLI returns the active multiplex for a given target CLI.
-func (uc *SwitchUseCases) GetActiveForCLI(targetCLIID int64) (*domain.ActiveMultiplex, error) {
-	am, err := uc.multiplexRepo.GetActive(targetCLIID)
-	if err != nil {
-		return nil, err
-	}
-	return am, nil
 }
 
 // BindProfile validates and stores a profile binding.
@@ -425,23 +406,6 @@ func (uc *SwitchUseCases) ClearCLIConfig(targetCLIID int64) error {
 	return config.WriteAtomicJSON(resolvedPath, root)
 }
 
-// GetBoundModels returns the current model mappings for a given CLI.
-func (uc *SwitchUseCases) GetBoundModels(targetCLIID int64) (map[string]string, error) {
-	am, err := uc.multiplexRepo.GetActive(targetCLIID)
-	if err != nil {
-		return nil, err
-	}
-	if am == nil {
-		return make(map[string]string), nil
-	}
-
-	mappings := make(map[string]string)
-	if err := json.Unmarshal([]byte(am.ModelMappings), &mappings); err != nil {
-		return nil, fmt.Errorf("parse model mappings: %w", err)
-	}
-	return mappings, nil
-}
-
 // GetProviderForCLI returns the first provider ID bound to the given CLI.
 // For multi-provider setups, use ListBindingsForCLI for all providers.
 func (uc *SwitchUseCases) GetProviderForCLI(targetCLIID int64) (int64, error) {
@@ -476,12 +440,11 @@ func (uc *SwitchUseCases) FindCLIByName(name string) (*domain.TargetCLI, error) 
 	if err != nil {
 		return nil, fmt.Errorf("list CLIs: %w", err)
 	}
-	for i := range clis {
-		if strings.EqualFold(clis[i].Name, name) {
-			return &clis[i], nil
-		}
+	cli := domain.FindCLIByName(clis, name)
+	if cli == nil {
+		return nil, fmt.Errorf("CLI '%s' not found", name)
 	}
-	return nil, fmt.Errorf("CLI '%s' not found", name)
+	return cli, nil
 }
 
 // ListBackups returns the centralized backups for a target CLI's config file,

@@ -254,16 +254,6 @@ func MigrationAddDefaultContextWindow(db *sql.DB) error {
 	return nil
 }
 
-// MigrationCopilotShellProfile updates the github-copilot target CLI row to use
-// the new shell-profile mutator instead of the deprecated copilot-env-file.
-func MigrationCopilotShellProfile(db *sql.DB) error {
-	_, err := db.Exec(`UPDATE target_clis SET mutator = 'copilot-shell-profile', config_path = '' WHERE name = 'github-copilot' AND mutator = 'copilot-env-file'`)
-	if err != nil {
-		return fmt.Errorf("migrate copilot to shell profile: %w", err)
-	}
-	return nil
-}
-
 // MigrationAddLogoURL adds the logo_url column to providers.
 // Idempotent: checks if column exists before altering.
 func MigrationAddLogoURL(db *sql.DB) error {

@@ -1,0 +1,20 @@
+aimux — AI provider multiplexer for dev CLIs
+
+Usage:
+  aimux                    Launch TUI (default)
+  aimux apply <cli-name>   Apply active provider binding for a CLI
+  aimux run <cli> [args]   Launch a CLI agent with resolved credentials (auto-detect binary)
+  aimux exec <cli> -- ...  Run a command with resolved env vars (daemon or direct)
+  aimux list               Show active multiplexes
+  aimux backups <cli-name> List centralized backups for a CLI
+  aimux restore <cli-name> Restore the latest backup for a CLI
+  aimux version            Show version and check for updates
+  aimux update             Update aimux to the latest release
+
+Examples:
+  aimux apply claude-code
+  aimux run claude-code
+  aimux run opencode --fast
+  aimux exec claude-code -- claude
+  aimux backups claude-code
+  aimux restore claude-code

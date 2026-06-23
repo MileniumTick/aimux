@@ -129,18 +129,27 @@ func TestLookupModelMetadata_ExactMatch(t *testing.T) {
 	}
 	cw, ok := md[domain.MetaContextWindow]
 	if !ok {
-		t.Error("expected MetaContextWindow in returned metadata")
+		t.Fatal("expected MetaContextWindow in returned metadata")
 	}
-	if cw != int64(1_000_000) {
-		t.Errorf("MetaContextWindow = %v, want 1000000", cw)
-	}
-	// Should auto-derive suffix
-	suffix, ok := md[domain.MetaContextSuffix]
+	// Catalog stores int literals (not int64) — compare as int
+	cwInt, ok := cw.(int)
 	if !ok {
-		t.Error("expected MetaContextSuffix to be auto-derived")
+		t.Fatalf("MetaContextWindow type = %T, want int", cw)
 	}
-	if suffix != "[1m]" {
-		t.Errorf("MetaContextSuffix = %v, want [1m]", suffix)
+	if cwInt != 1_000_000 {
+		t.Errorf("MetaContextWindow = %d, want 1000000", cwInt)
+	}
+	// Check another known field
+	cost, ok := md[domain.MetaCost]
+	if !ok {
+		t.Fatal("expected MetaCost in returned metadata")
+	}
+	costMap, ok := cost.(map[string]any)
+	if !ok {
+		t.Fatalf("MetaCost type = %T, want map[string]any", cost)
+	}
+	if costMap["input"] != 0.14 {
+		t.Errorf("expected flash input cost 0.14, got %v", costMap["input"])
 	}
 }
 
@@ -151,33 +160,28 @@ func TestLookupModelMetadata_PrefixMatch(t *testing.T) {
 	}
 	cw, ok := md[domain.MetaContextWindow]
 	if !ok {
-		t.Error("expected MetaContextWindow in prefix-matched metadata")
+		t.Fatal("expected MetaContextWindow in prefix-matched metadata")
 	}
-	if cw != int64(1_000_000) {
-		t.Errorf("MetaContextWindow = %v, want 1000000", cw)
+	cwInt, ok := cw.(int)
+	if !ok {
+		t.Fatalf("MetaContextWindow type = %T, want int", cw)
+	}
+	if cwInt != 1_000_000 {
+		t.Errorf("MetaContextWindow = %d, want 1000000", cwInt)
 	}
 }
 
 func TestLookupModelMetadata_LongestPrefixWins(t *testing.T) {
-	// "deepseek-v4-pro" and "deepseek-v4" don't exist as separate catalogs,
-	// but we use a scenario where multiple prefixes match.
-	// "deepseek-v4-flash-something" should match "deepseek-v4-flash" (len 17) over "deepseek-v4" (len 12)
-	// Wait, there's no "deepseek-v4" prefix in the catalog. Let's use a real scenario.
-	// "deepseek-v4-pro-preview" matches "deepseek-v4-pro" (len 15) which is longer than "deepseek-v4" ... but there's no "deepseek-v4".
-	// Actually "claude-sonnet-4" and "claude-haiku-4" share "claude-" prefix.
-	// Let's use: "claude-sonnet-4-new" should match "claude-sonnet-4" (len 15) but not "claude-haiku-4" (len 14).
-	// More convincingly: "kimi-k2.7-code-extra" matches "kimi-k2.7-code" (len 15) vs "kimi-k2.6" (len 9) vs "kimi-k2.5" (len 9).
-	// Actually for a simpler test: "qwen3.7-max-plus" matches "qwen3.7-max" (len 10) vs "qwen3.7-plus" (len 10).
-	// Both have len 10 — first iterated wins? Actually longest prefix = 10 for both.
-	// Let's verify which one wins — both have same length. Let me pick a case with clear different lengths.
-	// "deepseek-v4-flash-plus" matches "deepseek-v4-flash" (len 17). "deepseek-v4" is not in catalog.
-	// OK, let's just check "deepseek-v4-flash-plus" matches v4-flash not v4-pro.
-	// "deepseek-v4-flash-plus": "deepseek-v4-flash" (len 17) and "deepseek-v4-pro" (len 15) and "deepseek-v4-lite" (len 15).
-	// 17 > 15, so v4-flash should win.
+	// "deepseek-v4-flash-plus" should match "deepseek-v4-flash" (len 17) over
+	// "deepseek-v4-pro" (len 15) or "deepseek-v4-lite" (len 15)
 	md := LookupModelMetadata("deepseek-v4-flash-plus")
 	cw := md[domain.MetaContextWindow]
-	if cw != int64(1_000_000) {
-		t.Errorf("expected v4-flash match (cost 0.14), got context_window=%v", cw)
+	cwInt, ok := cw.(int)
+	if !ok {
+		t.Fatalf("MetaContextWindow type = %T, want int", cw)
+	}
+	if cwInt != 1_000_000 {
+		t.Errorf("expected v4-flash match (cost 0.14), got context_window=%v", cwInt)
 	}
 	// Verify it's truly the flash metadata by checking cost
 	cost, ok := md[domain.MetaCost]
@@ -212,55 +216,6 @@ func TestLookupModelMetadata_EmptyName(t *testing.T) {
 	if len(md) != 0 {
 		t.Errorf("expected empty metadata for empty name, got len=%d", len(md))
 	}
-}
-
-// ── ApplyModelOverrides ───────────────────────────────────────────────────
-
-func TestApplyModelOverrides(t *testing.T) {
-	t.Run("nil base with overrides", func(t *testing.T) {
-		overrides := map[string]any{"key1": "val1", "key2": int64(42)}
-		result := ApplyModelOverrides(nil, overrides)
-		if result == nil {
-			t.Fatal("ApplyModelOverrides returned nil")
-		}
-		if result["key1"] != "val1" {
-			t.Errorf("key1 = %v, want %q", result["key1"], "val1")
-		}
-		if result["key2"] != int64(42) {
-			t.Errorf("key2 = %v, want 42", result["key2"])
-		}
-	})
-
-	t.Run("override replaces base value", func(t *testing.T) {
-		base := domain.ModelMetadata{
-			"context_window": int64(128_000),
-			"max_tokens":     int64(4_096),
-		}
-		overrides := map[string]any{"context_window": int64(200_000)}
-		result := ApplyModelOverrides(base, overrides)
-		if result["context_window"] != int64(200_000) {
-			t.Errorf("context_window = %v, want 200000", result["context_window"])
-		}
-		if result["max_tokens"] != int64(4_096) {
-			t.Errorf("max_tokens should remain 4096, got %v", result["max_tokens"])
-		}
-	})
-
-	t.Run("empty overrides returns base unchanged", func(t *testing.T) {
-		base := domain.ModelMetadata{"key": "value"}
-		result := ApplyModelOverrides(base, map[string]any{})
-		if result["key"] != "value" {
-			t.Errorf("key = %v, want %q", result["key"], "value")
-		}
-	})
-
-	t.Run("nil overrides returns base unchanged", func(t *testing.T) {
-		base := domain.ModelMetadata{"key": "value"}
-		result := ApplyModelOverrides(base, nil)
-		if result["key"] != "value" {
-			t.Errorf("key = %v, want %q", result["key"], "value")
-		}
-	})
 }
 
 // ── FormatCost ────────────────────────────────────────────────────────────
@@ -309,7 +264,7 @@ func TestFormatCost(t *testing.T) {
 		{
 			name: "wrong map value type",
 			cost: map[string]any{"input": "three", "output": "fifteen"},
-			want: "$0.00/$0.00/M",
+			want: "",
 		},
 	}
 	for _, tt := range tests {

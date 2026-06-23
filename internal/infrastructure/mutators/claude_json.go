@@ -8,14 +8,6 @@ import (
 	"github.com/MileniumTick/aimux/internal/infrastructure/config"
 )
 
-// defaultClaudeExtraEnv provides recommended default env vars for Claude Code.
-// Users can override these via mutator_config.extra_env.
-// ponytail: sensible defaults; users who know better can set extra_env.
-var defaultClaudeExtraEnv = map[string]string{
-	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-	"CLAUDE_CODE_EFFORT_LEVEL":                 "max",
-}
-
 // ClaudeSettingsJSON mutates Claude Code's settings.json by building an env
 // block from model mappings, provider API key, and optional extra env vars.
 // Registered as: "claude-settings-json"
@@ -135,10 +127,11 @@ func applyClaudeExtraEnv(env map[string]any, mutatorConfig map[string]any) {
 	}
 
 	// Apply defaults (won't overwrite existing keys from merge above)
-	for k, v := range defaultClaudeExtraEnv {
-		if _, exists := env[k]; !exists {
-			env[k] = v
-		}
+	if _, exists := env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]; !exists {
+		env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+	}
+	if _, exists := env["CLAUDE_CODE_EFFORT_LEVEL"]; !exists {
+		env["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
 	}
 
 	// Apply user overrides from mutator_config.extra_env

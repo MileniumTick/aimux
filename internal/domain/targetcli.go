@@ -1,5 +1,18 @@
 package domain
 
+import "strings"
+
+// FindCLIByName finds a TargetCLI by case-insensitive name match.
+// Returns nil if not found.
+func FindCLIByName(clis []TargetCLI, name string) *TargetCLI {
+	for i := range clis {
+		if strings.EqualFold(clis[i].Name, name) {
+			return &clis[i]
+		}
+	}
+	return nil
+}
+
 // TargetCLI represents a target CLI row in the database.
 type TargetCLI struct {
 	ID            int64

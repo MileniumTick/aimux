@@ -36,13 +36,3 @@ func truncateTextStyle(s string, style lipgloss.Style, maxWidth int) string {
 	return style.MaxWidth(maxWidth).Render(s)
 }
 
-// truncateInline truncates s to maxWidth, appending tail (default "…"),
-// and preserves any ANSI styling that was already applied to s.
-// Use this when s already contains ANSI sequences and you need to
-// truncate without losing existing formatting.
-func truncateInline(s string, maxWidth int) string {
-	if maxWidth <= 0 || s == "" {
-		return s
-	}
-	return ansi.Truncate(s, maxWidth, "…")
-}
